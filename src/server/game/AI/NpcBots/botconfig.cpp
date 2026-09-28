@@ -143,6 +143,21 @@ static bool _untarget_wnpc_flightmaster;
 static bool _wanderingFreeLootSkinning;
 static bool _wanderingSpawnNearPlayers;
 static uint32 _wanderingMaxPerGrid;
+static bool _guildsEnable;
+static bool _openaiEnable;
+static std::string _openaiApiKey;
+static std::string _openaiModel;
+static std::string _openaiEndpoint;
+static std::string _openaiReasoningEffort;
+static std::string _openaiInstructions;
+static uint32 _openaiMaxOutputTokens;
+static uint32 _openaiTimeout;
+static uint32 _openaiThreads;
+static uint32 _openaiQueueSize;
+static uint32 _openaiPlayerCooldown;
+static uint32 _openaiChatContextSize;
+static bool _openaiEmotes;
+static uint32 _guildsChance;
 static bool _chatterEnable;
 static bool _chatterHiredBots;
 static bool _chatterChannelEnable;
@@ -472,6 +487,22 @@ private:
         _wanderingFreeLootSkinning      = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.FreeLoot.Skinning", false);
         _wanderingSpawnNearPlayers      = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Continents.SpawnNearPlayers", true);
         _wanderingMaxPerGrid            = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Continents.MaxPerGrid", 100);
+        _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
+        _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
+        _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
+        _openaiApiKey                   = sConfigMgr->GetStringDefault("NpcBot.Chatter.OpenAI.ApiKey", "");
+        _openaiModel                    = sConfigMgr->GetStringDefault("NpcBot.Chatter.OpenAI.Model", "gpt-4.1-mini");
+        _openaiEndpoint                 = sConfigMgr->GetStringDefault("NpcBot.Chatter.OpenAI.Endpoint",
+            "https://api.openai.com/v1/responses");
+        _openaiReasoningEffort          = sConfigMgr->GetStringDefault("NpcBot.Chatter.OpenAI.ReasoningEffort", "");
+        _openaiInstructions             = sConfigMgr->GetStringDefault("NpcBot.Chatter.OpenAI.Instructions", "");
+        _openaiMaxOutputTokens          = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.MaxOutputTokens", 120);
+        _openaiTimeout                  = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.Timeout", 15);
+        _openaiThreads                  = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.Threads", 2);
+        _openaiQueueSize                = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.QueueSize", 20);
+        _openaiPlayerCooldown           = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.PlayerCooldown", 3);
+        _openaiChatContextSize          = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.ChatContextSize", 20);
+        _openaiEmotes                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Emotes", true);
         _mult_xpgain_wanderer           = sConfigMgr->GetFloatDefault("NpcBot.WanderingBots.Continents.XPGain", 1.0f);
         _enableWanderingBotsBG          = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.BG.Enable", false);
         _enableConfigLevelCapBG         = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.BG.CapLevel", false);
@@ -713,6 +744,12 @@ private:
         RoundToInterval(_chatterGreetChance, uint32(0), uint32(100));
         RoundToInterval(_chatterReplyChance, uint32(0), uint32(100));
         RoundToInterval(_chatterEventChance, uint32(0), uint32(100));
+        RoundToInterval(_guildsChance, uint32(0), uint32(100));
+        RoundToInterval(_openaiMaxOutputTokens, uint32(16), uint32(4096));
+        RoundToInterval(_openaiTimeout, uint32(1), uint32(120));
+        RoundToInterval(_openaiThreads, uint32(1), uint32(16));
+        RoundToInterval(_openaiQueueSize, uint32(1), uint32(1000));
+        RoundToInterval(_openaiChatContextSize, uint32(0), uint32(100));
 
         if ((_shared_ownership_options | SHARED_OWNER_OPTION_MASK_ALL) != SHARED_OWNER_OPTION_MASK_ALL)
         {
@@ -1290,6 +1327,66 @@ bool BotCfg::SpawnWanderingBotsNearPlayers()
 uint32 BotCfg::GetMaxWanderingBotsPerGrid()
 {
     return _wanderingMaxPerGrid;
+}
+bool BotCfg::IsBotOpenAIEnabled()
+{
+    return _openaiEnable && !_openaiApiKey.empty();
+}
+std::string const& BotCfg::GetBotOpenAIApiKey()
+{
+    return _openaiApiKey;
+}
+std::string const& BotCfg::GetBotOpenAIModel()
+{
+    return _openaiModel;
+}
+std::string const& BotCfg::GetBotOpenAIEndpoint()
+{
+    return _openaiEndpoint;
+}
+std::string const& BotCfg::GetBotOpenAIReasoningEffort()
+{
+    return _openaiReasoningEffort;
+}
+std::string const& BotCfg::GetBotOpenAIInstructions()
+{
+    return _openaiInstructions;
+}
+uint32 BotCfg::GetBotOpenAIMaxOutputTokens()
+{
+    return _openaiMaxOutputTokens;
+}
+uint32 BotCfg::GetBotOpenAITimeout()
+{
+    return _openaiTimeout;
+}
+uint32 BotCfg::GetBotOpenAIThreads()
+{
+    return _openaiThreads;
+}
+uint32 BotCfg::GetBotOpenAIQueueSize()
+{
+    return _openaiQueueSize;
+}
+uint32 BotCfg::GetBotOpenAIPlayerCooldown()
+{
+    return _openaiPlayerCooldown;
+}
+uint32 BotCfg::GetBotOpenAIChatContextSize()
+{
+    return _openaiChatContextSize;
+}
+bool BotCfg::IsBotOpenAIEmotesEnabled()
+{
+    return _openaiEmotes;
+}
+bool BotCfg::IsBotGuildsEnabled()
+{
+    return _guildsEnable;
+}
+uint32 BotCfg::GetBotGuildChance()
+{
+    return _guildsChance;
 }
 
 bool BotCfg::IsBotChatterEnabled()

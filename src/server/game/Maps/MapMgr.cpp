@@ -39,6 +39,7 @@
 //npcbot
 #include "botdatamgr.h"
 #include "botmgr.h"
+#include "botopenai.h"
 //end npcbot
 
 MapMgr::MapMgr()
@@ -344,6 +345,10 @@ bool MapMgr::IsValidMAP(uint32 mapid, bool startUp)
 
 void MapMgr::UnloadAll()
 {
+    //npcbot: stop OpenAI requests
+    BotOpenAI::Shutdown();
+    //end npcbot
+
     for (MapMapType::iterator iter = i_maps.begin(); iter != i_maps.end();)
     {
         iter->second->UnloadAll();

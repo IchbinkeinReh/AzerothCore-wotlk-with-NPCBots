@@ -229,6 +229,7 @@ public:
     static void LoadNpcBotGearSets();
 
     static void LoadNpcBotMgrData();
+    static void LoadNpcBotGuildNames();
 
     static void DeleteOldLogs();
 
@@ -252,6 +253,8 @@ public:
     static Creature const* FindBot(uint32 entry);
     static Creature const* FindBot(std::string_view name, LocaleConstant loc, std::vector<uint32> const* not_ids = nullptr);
     static NpcBotRegistry const& GetExistingNPCBots();
+    // pseudo-random but stable guild of a bot, empty if none
+    static std::string const& GetBotGuildName(uint32 entry);
     // appends bots matching the query to a SMSG_WHO packet, safe to call from map threads
     static void AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& data, uint32& matchCount,
         uint32& displayCount);

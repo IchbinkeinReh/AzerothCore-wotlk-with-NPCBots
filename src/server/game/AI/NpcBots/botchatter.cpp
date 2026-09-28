@@ -4,6 +4,7 @@
 #include "botdatamgr.h"
 #include "botdefine.h"
 #include "botmgr.h"
+#include "botopenai.h"
 #include "bottext.h"
 #include "CellImpl.h"
 #include "Channel.h"
@@ -26,6 +27,8 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <set>
+#include <sstream>
 
 /*
 NpcBot Chatter, see botchatter.h
@@ -88,7 +91,7 @@ namespace
     }
 
     // picks a random non-empty variant among all texts of the category
-    bool SelectText(BotChatterCategory category, uint32& textId, uint8& slot)
+    bool SelectText(BotChatterCategory category, BotChatter::ChatterText& text)
     {
         ChatterTextRange const& range = ChatterTexts[category];
 
@@ -111,7 +114,7 @@ namespace
             return false;
         }
 
-        std::tie(textId, slot) = Acore::Containers::SelectRandomContainerElement(variants);
+        std::tie(text.textId, text.slot) = Acore::Containers::SelectRandomContainerElement(variants);
         return true;
     }
 
@@ -204,6 +207,192 @@ namespace
         return true;
     }
 
+    constexpr std::size_t CHATTER_AI_HISTORY_SIZE = 8;
+    constexpr time_t CHATTER_AI_HISTORY_EXPIRE = 15 * MINUTE;
+    constexpr std::size_t CHATTER_AI_MAX_TEXT_LENGTH = 240;
+
+    // world thread only
+    std::unordered_map<ObjectGuid, time_t> AIPlayerCooldowns;
+
+    // emotes an OpenAI answer may contain, as typed by players
+    struct ChatterEmote
+    {
+        std::string_view name;
+        uint32 textEmote;
+    };
+
+    constexpr std::array ChatterEmotes =
+    {
+        ChatterEmote{ "agree", TEXT_EMOTE_AGREE },          ChatterEmote{ "angry", TEXT_EMOTE_ANGRY },
+        ChatterEmote{ "applaud", TEXT_EMOTE_APPLAUD },      ChatterEmote{ "beg", TEXT_EMOTE_BEG },
+        ChatterEmote{ "blush", TEXT_EMOTE_BLUSH },          ChatterEmote{ "bored", TEXT_EMOTE_BORED },
+        ChatterEmote{ "bow", TEXT_EMOTE_BOW },              ChatterEmote{ "bye", TEXT_EMOTE_BYE },
+        ChatterEmote{ "cheer", TEXT_EMOTE_CHEER },          ChatterEmote{ "chicken", TEXT_EMOTE_CHICKEN },
+        ChatterEmote{ "chuckle", TEXT_EMOTE_CHUCKLE },      ChatterEmote{ "confused", TEXT_EMOTE_CONFUSED },
+        ChatterEmote{ "congratulate", TEXT_EMOTE_CONGRATULATE }, ChatterEmote{ "cower", TEXT_EMOTE_COWER },
+        ChatterEmote{ "cry", TEXT_EMOTE_CRY },              ChatterEmote{ "dance", TEXT_EMOTE_DANCE },
+        ChatterEmote{ "facepalm", TEXT_EMOTE_FACEPALM },    ChatterEmote{ "flex", TEXT_EMOTE_FLEX },
+        ChatterEmote{ "flirt", TEXT_EMOTE_FLIRT },          ChatterEmote{ "gasp", TEXT_EMOTE_GASP },
+        ChatterEmote{ "giggle", TEXT_EMOTE_GIGGLE },        ChatterEmote{ "greet", TEXT_EMOTE_GREET },
+        ChatterEmote{ "grin", TEXT_EMOTE_GRIN },            ChatterEmote{ "hello", TEXT_EMOTE_HELLO },
+        ChatterEmote{ "hug", TEXT_EMOTE_HUG },              ChatterEmote{ "kiss", TEXT_EMOTE_KISS },
+        ChatterEmote{ "laugh", TEXT_EMOTE_LAUGH },          ChatterEmote{ "love", TEXT_EMOTE_LOVE },
+        ChatterEmote{ "no", TEXT_EMOTE_NO },                ChatterEmote{ "nod", TEXT_EMOTE_NOD },
+        ChatterEmote{ "point", TEXT_EMOTE_POINT },          ChatterEmote{ "pray", TEXT_EMOTE_PRAY },
+        ChatterEmote{ "roar", TEXT_EMOTE_ROAR },            ChatterEmote{ "rofl", TEXT_EMOTE_ROFL },
+        ChatterEmote{ "rude", TEXT_EMOTE_RUDE },            ChatterEmote{ "salute", TEXT_EMOTE_SALUTE },
+        ChatterEmote{ "shrug", TEXT_EMOTE_SHRUG },          ChatterEmote{ "shy", TEXT_EMOTE_SHY },
+        ChatterEmote{ "sigh", TEXT_EMOTE_SIGH },            ChatterEmote{ "sleep", TEXT_EMOTE_SLEEP },
+        ChatterEmote{ "smile", TEXT_EMOTE_SMILE },          ChatterEmote{ "surprised", TEXT_EMOTE_SURPRISED },
+        ChatterEmote{ "talk", TEXT_EMOTE_TALK },            ChatterEmote{ "thank", TEXT_EMOTE_THANK },
+        ChatterEmote{ "threaten", TEXT_EMOTE_THREATEN },    ChatterEmote{ "victory", TEXT_EMOTE_VICTORY },
+        ChatterEmote{ "wave", TEXT_EMOTE_WAVE },            ChatterEmote{ "wink", TEXT_EMOTE_WINK }
+    };
+
+    uint32 FindChatterEmote(std::string_view name)
+    {
+        auto itr = std::ranges::find(ChatterEmotes, name, &ChatterEmote::name);
+        if (itr == ChatterEmotes.end() || !sEmotesTextStore.LookupEntry(itr->textEmote))
+            return 0;
+        return itr->textEmote;
+    }
+
+    // SMSG_TEXT_EMOTE, the client builds the localized emote text itself
+    class EmoteBuilder
+    {
+    public:
+        EmoteBuilder(Creature const* source, uint32 textEmote, Unit const* target)
+            : _source(source), _textEmote(textEmote), _target(target) { }
+
+        void operator()(WorldPacket& data, LocaleConstant locale) const
+        {
+            std::string const name(_target ? _target->GetNameForLocaleIdx(locale) : "");
+
+            data.Initialize(SMSG_TEXT_EMOTE, 20 + name.size());
+            data << _source->GetGUID();
+            data << uint32(_textEmote);
+            data << uint32(0);
+            data << uint32(name.size());
+            if (name.size() > 1)
+                data << name;
+            else
+                data << uint8(0);
+        }
+
+    private:
+        Creature const* _source;
+        uint32 _textEmote;
+        Unit const* _target;
+    };
+
+    // recent party/raid and General channel messages, context for OpenAI answers
+    struct ChatLogLine
+    {
+        std::string speaker;
+        std::string text;
+        time_t time;
+    };
+
+    constexpr time_t CHATTER_CHAT_LOG_EXPIRE = 30 * MINUTE;
+
+    std::mutex ChatLogsLock;
+    std::unordered_map<uint64, std::deque<ChatLogLine>> ChatLogs;
+
+    uint64 GroupChatLogKey(Group const* group)
+    {
+        return (uint64(1) << 32) | group->GetGUID().GetCounter();
+    }
+
+    uint64 ChannelChatLogKey(uint32 zoneId, TeamId team)
+    {
+        return (uint64(2) << 32) | (uint64(zoneId) << 2) | uint64(team);
+    }
+
+    void LogChatLine(uint64 key, std::string_view speaker, std::string_view text)
+    {
+        const uint32 size = BotCfg::GetBotOpenAIChatContextSize();
+        if (!size || text.empty() || !BotOpenAI::IsEnabled())
+            return;
+
+        time_t now = GameTime::GetGameTime().count();
+
+        std::lock_guard<std::mutex> lock(ChatLogsLock);
+        std::erase_if(ChatLogs, [now](auto const& log) {
+            return log.second.empty() || log.second.back().time + CHATTER_CHAT_LOG_EXPIRE <= now;
+        });
+
+        std::deque<ChatLogLine>& log = ChatLogs[key];
+        log.push_back({ std::string(speaker), std::string(text), now });
+        while (log.size() > size)
+            log.pop_front();
+    }
+
+    std::string GetChatLogContext(uint64 key)
+    {
+        time_t now = GameTime::GetGameTime().count();
+        std::ostringstream ss;
+
+        std::lock_guard<std::mutex> lock(ChatLogsLock);
+        auto itr = ChatLogs.find(key);
+        if (itr != ChatLogs.end())
+            for (ChatLogLine const& line : itr->second)
+                if (line.time + CHATTER_CHAT_LOG_EXPIRE > now)
+                    ss << '[' << line.speaker << "]: " << line.text << '\n';
+
+        return ss.str();
+    }
+
+    // one chat line: no line breaks, no chat escape sequences, cut at a character boundary
+    std::string SanitizeAIText(std::string const& text)
+    {
+        std::wstring wtext;
+        if (!Utf8toWStr(text, wtext))
+            return {};
+
+        for (wchar_t& c : wtext)
+        {
+            if (c == L'\n' || c == L'\r' || c == L'\t')
+                c = L' ';
+            else if (c == L'|')
+                c = L'/';
+        }
+
+        std::size_t first = wtext.find_first_not_of(L" \"");
+        std::size_t last = wtext.find_last_not_of(L" \"");
+        if (first == std::wstring::npos)
+            return {};
+        wtext = wtext.substr(first, last - first + 1);
+
+        std::string result;
+        while (!wtext.empty())
+        {
+            if (!WStrToUtf8(wtext, result))
+                return {};
+            if (result.size() <= CHATTER_AI_MAX_TEXT_LENGTH)
+                break;
+            wtext.resize(wtext.size() - 1);
+        }
+        return result;
+    }
+
+    std::string GetEnglishClassName(uint8 botClass)
+    {
+        uint32 textId = GetClassTextId(botClass);
+        return textId ? GetTextVariant(textId, 0, DEFAULT_LOCALE) : "adventurer";
+    }
+
+    std::string GetEnglishRaceName(uint8 race)
+    {
+        ChrRacesEntry const* entry = sChrRacesStore.LookupEntry(race);
+        return entry ? entry->name[sWorld->GetDefaultDbcLocale()] : "";
+    }
+
+    std::string GetEnglishZoneName(uint32 zoneId)
+    {
+        AreaTableEntry const* zone = sAreaTableStore.LookupEntry(zoneId);
+        return zone ? zone->area_name[sWorld->GetDefaultDbcLocale()] : "";
+    }
+
     struct NearbyBotCheck
     {
         NearbyBotCheck(WorldObject const* obj, float range) : _obj(obj), _range(range) { }
@@ -221,13 +410,13 @@ namespace
 
 BotChatter::BotChatter(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot),
     _greetTimer(urand(2000, 5000)), _idleTimer(urand(30000, 90000)),
-    _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0)
+    _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0), _aiPendingUntil(0)
 {
 }
 
 void BotChatter::TextBuilder::operator()(WorldPacket& data, LocaleConstant locale) const
 {
-    std::string text = _chatter.FormatText(_textId, _slot, locale, _subject);
+    std::string text = _text.textId ? _chatter.FormatText(_text.textId, _text.slot, locale, _subject) : _text.raw;
 
     switch (_msgType)
     {
@@ -379,6 +568,8 @@ void BotChatter::OnPlayerGroupChat(Player const* player, Group* group, ChatMsg m
 
     bool raid = msgType == CHAT_MSG_RAID || msgType == CHAT_MSG_RAID_LEADER;
     HandlePlayerMessage(player, message, raid ? BOT_CHATTER_REPLY_RAID : BOT_CHATTER_REPLY_PARTY, bots);
+
+    LogChatLine(GroupChatLogKey(group), player->GetName(), message);
 }
 
 void BotChatter::OnPlayerChannelChat(Player const* player, Channel const* channel, std::string_view message)
@@ -406,6 +597,8 @@ void BotChatter::OnPlayerChannelChat(Player const* player, Channel const* channe
     }
 
     HandlePlayerMessage(player, message, BOT_CHATTER_REPLY_CHANNEL, bots);
+
+    LogChatLine(ChannelChatLogKey(player->GetZoneId(), player->GetTeamId()), player->GetName(), message);
 }
 
 bool BotChatter::OnPlayerWhisper(Player* player, std::string const& botName, std::string_view message)
@@ -444,6 +637,9 @@ void BotChatter::ReplyToWhisper(Player* player, std::string_view message)
     if (!_me->IsAlive() || _ai->IsDuringTeleport())
         return;
 
+    if (!_me->IsInCombat() && !IsAIPending() && RequestAIReply(player, message, BOT_CHATTER_REPLY_WHISPER))
+        return;
+
     BotChatterCategory category = BOT_CHATTER_WHISPER_REPLY;
     if (_me->IsInCombat())
         category = BOT_CHATTER_WHISPER_BUSY;
@@ -454,15 +650,9 @@ void BotChatter::ReplyToWhisper(Player* player, std::string_view message)
             _greeted[player->GetGUID()] = GameTime::GetGameTime().count();
     }
 
-    uint32 textId;
-    uint8 slot;
-    if (!SelectText(category, textId, slot))
-        return;
-
-    WorldPacket data;
-    TextBuilder builder(*this, CHAT_MSG_WHISPER, textId, slot, player);
-    builder(data, player->GetSession()->GetSessionDbLocaleIndex());
-    player->SendDirectMessage(&data);
+    ChatterText text;
+    if (SelectText(category, text))
+        WhisperTo(text, player);
 }
 
 void BotChatter::HandlePlayerMessage(Player const* player, std::string_view message, BotChatterReplyMode mode,
@@ -475,8 +665,11 @@ void BotChatter::HandlePlayerMessage(Player const* player, std::string_view mess
     if (normalized.find_first_not_of(L' ') == std::wstring::npos)
         return;
 
+    // with OpenAI any message can be answered, otherwise only greetings and farewells
+    const bool ai = BotOpenAI::IsEnabled();
     BotChatterCategory category;
-    if (!GetReplyCategory(normalized, category))
+    const bool canned = GetReplyCategory(normalized, category);
+    if (!ai && !canned)
         return;
 
     LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
@@ -503,6 +696,24 @@ void BotChatter::HandlePlayerMessage(Player const* player, std::string_view mess
             own.push_back(&chatter);
         else
             others.push_back(&chatter);
+    }
+
+    // one bot answers through OpenAI: the addressed one, one of the player's own bots or,
+    // with a chance, a random one. Canned answers if that fails
+    if (ai)
+    {
+        BotChatter* responder = nullptr;
+        if (!addressed.empty())
+            responder = Acore::Containers::SelectRandomContainerElement(addressed);
+        else if (!own.empty())
+            responder = Acore::Containers::SelectRandomContainerElement(own);
+        else if (!others.empty() && roll_chance_i(BotCfg::GetBotChatterReplyChance()))
+            responder = Acore::Containers::SelectRandomContainerElement(others);
+
+        if (responder && responder->RequestAIReply(player, message, mode))
+            return;
+        if (!canned)
+            return;
     }
 
     // nobody in particular was addressed: one of the player's own bots always answers,
@@ -535,6 +746,157 @@ void BotChatter::HandlePlayerMessage(Player const* player, std::string_view mess
     }
 }
 
+bool BotChatter::RequestAIReply(Player const* player, std::string_view message, BotChatterReplyMode mode)
+{
+    if (!BotOpenAI::IsEnabled())
+        return false;
+
+    time_t now = GameTime::GetGameTime().count();
+
+    // per player cooldown, against spam and cost
+    auto cooldown = AIPlayerCooldowns.find(player->GetGUID());
+    if (cooldown != AIPlayerCooldowns.end() && cooldown->second > now)
+        return false;
+
+    std::erase_if(_aiHistory, [now](auto const& history) {
+        return history.second.lastUse + CHATTER_AI_HISTORY_EXPIRE <= now;
+    });
+    AIHistory& history = _aiHistory[player->GetGUID()];
+
+    BotAIRequest request;
+    request.botEntry = _me->GetEntry();
+    request.playerGuid = player->GetGUID();
+    request.replyMode = uint8(mode);
+    request.instructions = BuildAIInstructions(player, mode);
+
+    // group and channel answers get the recent chat instead of the conversation with this player
+    std::string context;
+    bool chatLog = BotCfg::GetBotOpenAIChatContextSize() > 0;
+    if (chatLog && (mode == BOT_CHATTER_REPLY_PARTY || mode == BOT_CHATTER_REPLY_RAID))
+    {
+        if (Group const* group = _ai->GetGroup())
+            context = GetChatLogContext(GroupChatLogKey(group));
+    }
+    else if (chatLog && mode == BOT_CHATTER_REPLY_CHANNEL)
+        context = GetChatLogContext(ChannelChatLogKey(player->GetZoneId(), player->GetTeamId()));
+    else
+        request.input.assign(history.messages.begin(), history.messages.end());
+
+    if (!context.empty())
+        request.instructions += "\n\nRecent messages in this chat, oldest first:\n" + context;
+
+    request.input.push_back({ false, std::string(message) });
+
+    if (BotCfg::IsBotOpenAIEmotesEnabled())
+        for (ChatterEmote const& emote : ChatterEmotes)
+            if (sEmotesTextStore.LookupEntry(emote.textEmote))
+                request.emotes.emplace_back(emote.name);
+
+    if (!BotOpenAI::Enqueue(std::move(request)))
+        return false;
+
+    std::erase_if(AIPlayerCooldowns, [now](auto const& entry) { return entry.second <= now; });
+    AIPlayerCooldowns[player->GetGUID()] = now + BotCfg::GetBotOpenAIPlayerCooldown();
+
+    history.lastUse = now;
+    history.messages.push_back({ false, std::string(message) });
+    while (history.messages.size() > CHATTER_AI_HISTORY_SIZE)
+        history.messages.pop_front();
+
+    // a lost request does not block the bot forever
+    _aiPendingUntil = now + BotCfg::GetBotOpenAITimeout() + MINUTE;
+    return true;
+}
+
+bool BotChatter::IsAIPending() const
+{
+    return _aiPendingUntil > GameTime::GetGameTime().count();
+}
+
+void BotChatter::ProcessAIReplies()
+{
+    BotAIResult result;
+    while (BotOpenAI::PollResult(result))
+    {
+        Creature const* bot = BotDataMgr::FindBot(result.botEntry);
+        if (bot && bot->GetBotAI())
+            bot->GetBotAI()->GetChatter().OnAIReply(result);
+    }
+}
+
+void BotChatter::OnAIReply(BotAIResult const& result)
+{
+    _aiPendingUntil = 0;
+
+    ChatterText text;
+    text.raw = SanitizeAIText(result.text);
+    uint32 textEmote = FindChatterEmote(result.emote);
+    if (text.raw.empty() && !textEmote)
+        return;
+
+    auto itr = _aiHistory.find(result.playerGuid);
+    if (itr != _aiHistory.end())
+    {
+        std::string line = textEmote ? '*' + result.emote + '*' : "";
+        if (!text.raw.empty())
+            line += (line.empty() ? "" : " ") + text.raw;
+
+        itr->second.messages.push_back({ true, std::move(line) });
+        while (itr->second.messages.size() > CHATTER_AI_HISTORY_SIZE)
+            itr->second.messages.pop_front();
+    }
+
+    if (textEmote)
+        PerformEmote(textEmote, ObjectAccessor::FindConnectedPlayer(result.playerGuid));
+
+    if (!text.raw.empty())
+        DeliverReply(text, result.playerGuid, BotChatterReplyMode(result.replyMode));
+}
+
+std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterReplyMode mode) const
+{
+    std::ostringstream ss;
+    ss << "You are " << _me->GetName() << ", a level " << uint32(_me->GetLevel()) << ' '
+        << GetEnglishRaceName(_ai->GetPlayerRace()) << ' ' << GetEnglishClassName(_ai->GetBotClass())
+        << " in World of Warcraft: Wrath of the Lich King, currently in " << GetEnglishZoneName(_me->GetZoneId())
+        << ". ";
+
+    std::string const& guild = BotDataMgr::GetBotGuildName(_me->GetEntry());
+    if (!guild.empty())
+        ss << "You are a member of the guild <" << guild << ">. ";
+
+    if (_ai->IAmFree())
+        ss << (_ai->IsWanderer() ? "You are an adventurer travelling the world on your own. " :
+            "You are a mercenary waiting to be hired. ");
+    else if (Player const* owner = _ai->GetBotOwner())
+        ss << "You are a hired companion of " << owner->GetName()
+            << (owner == player ? ", the one talking to you" : "") << ". ";
+
+    ss << player->GetName() << ", a level " << uint32(player->GetLevel()) << ' '
+        << GetEnglishRaceName(player->GetRace()) << ' ' << GetEnglishClassName(player->GetClass()) << ", talks to you ";
+    switch (mode)
+    {
+        case BOT_CHATTER_REPLY_PARTY:   ss << "in party chat. ";                break;
+        case BOT_CHATTER_REPLY_RAID:    ss << "in raid chat. ";                 break;
+        case BOT_CHATTER_REPLY_CHANNEL: ss << "in the zone's General channel. "; break;
+        case BOT_CHATTER_REPLY_WHISPER: ss << "in a private whisper. ";         break;
+        default:                        ss << "face to face. ";                 break;
+    }
+
+    ss << "Stay in character as an inhabitant of this world. Answer with a single short chat line of at most "
+        << CHATTER_AI_MAX_TEXT_LENGTH / 2 << " characters, in the language of the last message, "
+        << "without markdown, emojis, quotes or your own name in front. Never mention being an AI or a bot.";
+
+    if (BotCfg::IsBotOpenAIEmotesEnabled())
+        ss << " You can also perform an emote like a player typing /wave, pick none if no emote fits. "
+            << "The message may be empty when the emote alone is your answer.";
+
+    if (!BotCfg::GetBotOpenAIInstructions().empty())
+        ss << ' ' << BotCfg::GetBotOpenAIInstructions();
+
+    return ss.str();
+}
+
 bool BotChatter::CanChat(bool unprompted, bool inCombat) const
 {
     if (!BotCfg::IsBotChatterEnabled())
@@ -562,7 +924,7 @@ bool BotChatter::IsOwnedBy(Player const* player) const
 
 bool BotChatter::CanReplyTo(Player const* player, bool addressed) const
 {
-    if (_replyTimer)
+    if (_replyTimer || IsAIPending())
         return false;
 
     // hired bots always answer their owners
@@ -594,47 +956,57 @@ void BotChatter::SendPendingReply()
     ObjectGuid targetGuid = _replyTarget;
     _replyTarget.Clear();
 
-    if (!CanChat(false))
+    ChatterText text;
+    if (SelectText(_replyCategory, text))
+        DeliverReply(text, targetGuid, _replyMode);
+}
+
+// answer a player in the chat they used
+void BotChatter::DeliverReply(ChatterText const& text, ObjectGuid targetGuid, BotChatterReplyMode mode)
+{
+    Player* player = ObjectAccessor::FindConnectedPlayer(targetGuid);
+    if (!player || !player->IsInWorld())
         return;
 
-    switch (_replyMode)
+    // whispers work across maps
+    if (mode == BOT_CHATTER_REPLY_WHISPER)
+    {
+        if (_me->IsInWorld() && _me->IsAlive())
+            WhisperTo(text, player);
+        return;
+    }
+
+    if (!CanChat(false, mode != BOT_CHATTER_REPLY_SAY))
+        return;
+
+    switch (mode)
     {
         case BOT_CHATTER_REPLY_SAY:
         {
-            Player* player = ObjectAccessor::GetPlayer(*_me, targetGuid);
-            if (!player || !player->IsInWorld())
-                return;
-            if (!_me->IsWithinDistInMap(player, sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_SAY)))
+            if (player->GetMap() != _me->GetMap() ||
+                !_me->IsWithinDistInMap(player, sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_SAY)))
                 return;
 
             if (!_me->isMoving())
             {
                 _me->SetFacingToObject(player);
-                _me->HandleEmoteCommand(EMOTE_ONESHOT_WAVE);
+                // canned replies are greetings and farewells
+                _me->HandleEmoteCommand(text.textId ? EMOTE_ONESHOT_WAVE : EMOTE_ONESHOT_TALK);
             }
 
-            SayNearby(_replyCategory, player, CHAT_MSG_MONSTER_SAY);
+            SayNearby(text, player, CHAT_MSG_MONSTER_SAY);
             break;
         }
         case BOT_CHATTER_REPLY_PARTY:
         case BOT_CHATTER_REPLY_RAID:
-        {
-            Player* player = ObjectAccessor::FindConnectedPlayer(targetGuid);
-            if (!player)
-                return;
-
-            SayToGroup(_replyCategory, player, _replyMode == BOT_CHATTER_REPLY_RAID ? CHAT_MSG_RAID : CHAT_MSG_PARTY);
+            SayToGroup(text, player, mode == BOT_CHATTER_REPLY_RAID ? CHAT_MSG_RAID : CHAT_MSG_PARTY);
             break;
-        }
         case BOT_CHATTER_REPLY_CHANNEL:
-        {
-            Player* player = ObjectAccessor::GetPlayer(*_me, targetGuid);
-            if (!player || !player->IsInWorld())
-                return;
-
-            SayToZoneChannel(_replyCategory, player, true);
+            if (player->GetMap() == _me->GetMap())
+                SayToZoneChannel(text, player, true);
             break;
-        }
+        default:
+            break;
     }
 }
 
@@ -699,36 +1071,32 @@ bool BotChatter::HasPlayersInRange(float range) const
 
 bool BotChatter::SayNearby(BotChatterCategory category, WorldObject const* subject, ChatMsg msgType)
 {
+    ChatterText text;
+    return SelectText(category, text) && SayNearby(text, subject, msgType);
+}
+
+bool BotChatter::SayNearby(ChatterText const& text, WorldObject const* subject, ChatMsg msgType)
+{
     bool yell = msgType == CHAT_MSG_MONSTER_YELL;
     float range = sWorld->getFloatConfig(yell ? CONFIG_LISTEN_RANGE_YELL : CONFIG_LISTEN_RANGE_SAY);
     if (!HasPlayersInRange(range))
         return false;
 
-    uint32 textId;
-    uint8 slot;
-    if (!SelectText(category, textId, slot))
-        return false;
-
     // every listener gets the same variant in their own language
-    TextBuilder builder(*this, msgType, textId, slot, subject);
+    TextBuilder builder(*this, msgType, text, subject);
     Acore::LocalizedPacketDo<TextBuilder> localizer(builder);
     Acore::PlayerDistWorker<Acore::LocalizedPacketDo<TextBuilder>> worker(_me, range, localizer);
     Cell::VisitObjects(_me, worker, range);
     return true;
 }
 
-bool BotChatter::SayToGroup(BotChatterCategory category, WorldObject const* subject, ChatMsg msgType)
+bool BotChatter::SayToGroup(ChatterText const& text, WorldObject const* subject, ChatMsg msgType)
 {
     Group* group = _ai->GetGroup();
     if (!group)
         return false;
 
-    uint32 textId;
-    uint8 slot;
-    if (!SelectText(category, textId, slot))
-        return false;
-
-    TextBuilder builder(*this, msgType, textId, slot, subject);
+    TextBuilder builder(*this, msgType, text, subject);
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player* member = itr->GetSource();
@@ -740,10 +1108,17 @@ bool BotChatter::SayToGroup(BotChatterCategory category, WorldObject const* subj
         member->SendDirectMessage(&data);
     }
 
+    LogChatLine(GroupChatLogKey(group), _me->GetName(), GetDefaultText(text, subject));
     return true;
 }
 
 bool BotChatter::SayToZoneChannel(BotChatterCategory category, WorldObject const* subject, bool ignoreCooldown)
+{
+    ChatterText text;
+    return SelectText(category, text) && SayToZoneChannel(text, subject, ignoreCooldown);
+}
+
+bool BotChatter::SayToZoneChannel(ChatterText const& text, WorldObject const* subject, bool ignoreCooldown)
 {
     if (!BotCfg::IsBotChatterChannelEnabled())
         return false;
@@ -783,25 +1158,74 @@ bool BotChatter::SayToZoneChannel(BotChatterCategory category, WorldObject const
     if (listeners.empty())
         return false;
 
-    uint32 textId;
-    uint8 slot;
-    if (!SelectText(category, textId, slot))
-        return false;
-
     {
         std::lock_guard<std::mutex> guard(ChannelCooldownsLock);
         ChannelCooldowns[zoneId] = now + BotCfg::GetBotChatterChannelCooldown();
     }
 
+    std::set<TeamId> teams;
     for (auto const& [player, channel] : listeners)
     {
         WorldPacket data;
-        TextBuilder builder(*this, CHAT_MSG_CHANNEL, textId, slot, subject, channel->GetName());
+        TextBuilder builder(*this, CHAT_MSG_CHANNEL, text, subject, channel->GetName());
         builder(data, player->GetSession()->GetSessionDbLocaleIndex());
         player->SendDirectMessage(&data);
+        teams.insert(player->GetTeamId());
     }
 
+    std::string const defaultText = GetDefaultText(text, subject);
+    for (TeamId team : teams)
+        LogChatLine(ChannelChatLogKey(zoneId, team), _me->GetName(), defaultText);
+
     return true;
+}
+
+// text emote with its animation, seen by players around the bot
+void BotChatter::PerformEmote(uint32 textEmote, Player* target)
+{
+    EmotesTextEntry const* emote = sEmotesTextStore.LookupEntry(textEmote);
+    if (!emote || !_me->IsInWorld() || !_me->IsAlive())
+        return;
+
+    float range = sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_TEXTEMOTE);
+    if (target && (!target->IsInWorld() || target->GetMap() != _me->GetMap() ||
+        !_me->IsWithinDistInMap(target, range)))
+        target = nullptr;
+
+    switch (emote->textid)
+    {
+        // lasting states would stick to the bot
+        case EMOTE_STATE_SLEEP:
+        case EMOTE_STATE_SIT:
+        case EMOTE_STATE_KNEEL:
+        case EMOTE_STATE_DANCE:
+        case EMOTE_ONESHOT_NONE:
+            break;
+        default:
+            if (target && !_me->isMoving())
+                _me->SetFacingToObject(target);
+            _me->HandleEmoteCommand(emote->textid);
+            break;
+    }
+
+    EmoteBuilder builder(_me, textEmote, target);
+    Acore::LocalizedPacketDo<EmoteBuilder> localizer(builder);
+    Acore::PlayerDistWorker<Acore::LocalizedPacketDo<EmoteBuilder>> worker(_me, range, localizer);
+    Cell::VisitObjects(_me, worker, range);
+}
+
+bool BotChatter::WhisperTo(ChatterText const& text, Player* player)
+{
+    WorldPacket data;
+    TextBuilder builder(*this, CHAT_MSG_WHISPER, text, player);
+    builder(data, player->GetSession()->GetSessionDbLocaleIndex());
+    player->SendDirectMessage(&data);
+    return true;
+}
+
+std::string BotChatter::GetDefaultText(ChatterText const& text, WorldObject const* subject) const
+{
+    return text.textId ? FormatText(text.textId, text.slot, DEFAULT_LOCALE, subject) : text.raw;
 }
 
 std::string BotChatter::FormatText(uint32 textId, uint8 slot, LocaleConstant locale, WorldObject const* subject) const

@@ -2,6 +2,7 @@
 #include "BattlegroundQueue.h"
 #include "bot_ai.h"
 #include "botconfig.h"
+#include "botchatter.h"
 #include "botdatamgr.h"
 #include "botgearscore.h"
 #include "botlog.h"
@@ -81,6 +82,8 @@ static bool allBotsLoaded = false;
 
 static uint32 next_wandering_bot_spawn_delay = 0;
 
+static std::vector<std::string> _botGuildNames;
+
 // /who list snapshot, rebuilt in the world thread (BotDataMgr::Update) and read by map threads (CMSG_WHO)
 struct BotWhoListEntry
 {
@@ -92,6 +95,7 @@ struct BotWhoListEntry
     uint8 gender;
     uint32 zoneId;
     TeamId team;
+    std::string guild;
 };
 static std::vector<BotWhoListEntry> _botWhoList;
 static uint32 _botWhoListUpdateTimer = 0;
@@ -536,7 +540,7 @@ private:
         //copy all fields
         bot_template = *orig_template;
         bot_template.Entry = next_bot_id;
-        bot_template.SubName = "";
+        bot_template.SubName = BotDataMgr::GetBotGuildName(next_bot_id);
         bot_template.speed_run = BotCfg::GetBotWandererSpeedMod();
         bot_template.KillCredit[0] = orig_entry;
 
@@ -982,9 +986,44 @@ static void UpdateBotWhoList()
             .playerRace = BotMgr::GetBotPlayerRace(extras->bclass, extras->race),
             .gender = appearance ? appearance->gender : uint8(GENDER_MALE),
             .zoneId = zoneId,
-            .team = BotDataMgr::GetTeamIdForFaction(bot->GetFaction())
+            .team = BotDataMgr::GetTeamIdForFaction(bot->GetFaction()),
+            .guild = BotDataMgr::GetBotGuildName(bot->GetEntry())
         });
     }
+}
+
+void BotDataMgr::LoadNpcBotGuildNames()
+{
+    uint32 oldMSTime = getMSTime();
+
+    _botGuildNames.clear();
+
+    QueryResult result = WorldDatabase.Query("SELECT name FROM creature_template_npcbot_guild_names ORDER BY id");
+    if (result)
+    {
+        do
+        {
+            _botGuildNames.push_back(result->Fetch()[0].Get<std::string>());
+        } while (result->NextRow());
+    }
+
+    BOT_LOG_INFO("server.loading", ">> Loaded {} bot guild names in {} ms", uint32(_botGuildNames.size()),
+        GetMSTimeDiffToNow(oldMSTime));
+}
+
+std::string const& BotDataMgr::GetBotGuildName(uint32 entry)
+{
+    static std::string const noGuild;
+
+    if (!BotCfg::IsBotGuildsEnabled() || _botGuildNames.empty())
+        return noGuild;
+
+    // spread consecutive entries (generated wanderers), several bots end up in the same guild
+    uint32 hash = entry * 2654435761u;
+    if ((hash >> 16) % 100 >= BotCfg::GetBotGuildChance())
+        return noGuild;
+
+    return _botGuildNames[hash % _botGuildNames.size()];
 }
 
 void BotDataMgr::AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& data, uint32& matchCount,
@@ -1000,9 +1039,15 @@ void BotDataMgr::AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& 
             continue;
         if (!query.zoneIds.empty() && std::ranges::find(query.zoneIds, bot.zoneId) == query.zoneIds.end())
             continue;
-        // bots are in no guild
         if (!query.guild.empty())
-            continue;
+        {
+            std::wstring wguild;
+            if (bot.guild.empty() || !Utf8toWStr(bot.guild, wguild))
+                continue;
+            wstrToLower(wguild);
+            if (wguild.find(query.guild) == std::wstring::npos)
+                continue;
+        }
 
         std::string name = bot.name;
         if (CreatureLocale const* creatureLocale = sObjectMgr->GetCreatureLocale(bot.entry))
@@ -1021,8 +1066,9 @@ void BotDataMgr::AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& 
         if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot.zoneId))
             zoneName = zone->area_name[query.dbcLocale];
 
-        if (!query.strings.empty() && std::ranges::none_of(query.strings, [&wname, &zoneName](std::wstring const& str) {
-            return !str.empty() && (wname.find(str) != std::wstring::npos || Utf8FitTo(zoneName, str));
+        if (!query.strings.empty() && std::ranges::none_of(query.strings, [&](std::wstring const& str) {
+            return !str.empty() && (wname.find(str) != std::wstring::npos || Utf8FitTo(zoneName, str) ||
+                (!bot.guild.empty() && Utf8FitTo(bot.guild, str)));
         }))
             continue;
 
@@ -1030,7 +1076,7 @@ void BotDataMgr::AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& 
             continue;
 
         data << name;
-        data << "";
+        data << bot.guild;
         data << uint32(bot.level);
         data << uint32(bot.playerClass);
         data << uint32(bot.playerRace);
@@ -1043,6 +1089,8 @@ void BotDataMgr::AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& 
 
 void BotDataMgr::Update(uint32 diff)
 {
+    BotChatter::ProcessAIReplies();
+
     static const uint32 BOT_WHO_LIST_UPDATE_DELAY = 5000;
     if (_botWhoListUpdateTimer <= diff)
     {

@@ -73,6 +73,7 @@ void BotMgr::Initialize()
     BotLogger::Log(NPCBOT_LOG_SYSTEM_START, uint32(0), std::string_view{ GitRevision::GetFileVersionStr() }.substr(0, MAX_BOT_LOG_PARAM_LENGTH));
 
     BotDataMgr::LoadNpcBots();
+    BotDataMgr::LoadNpcBotGuildNames();
     BotDataMgr::LoadWanderMap();
     BotDataMgr::GenerateWanderingBots();
     BotDataMgr::CreateGeneratedBotsSortedGear();

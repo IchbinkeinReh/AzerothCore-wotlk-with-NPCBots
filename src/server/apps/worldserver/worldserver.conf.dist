@@ -5523,6 +5523,18 @@ NpcBot.WanderingBots.Continents.SpawnNearPlayers = 1
 NpcBot.WanderingBots.Continents.MaxPerGrid = 100
 
 #
+#    NpcBot.Guilds.Enable
+#    NpcBot.Guilds.Chance
+#        Description: Give bots a guild name, like players have. Each bot gets a random but stable
+#                     guild from `creature_template_npcbot_guild_names` with Chance (%), shown in /who
+#                     and under the name of wandering bots. Bots are no real guild members.
+#        Default:     1  - (NpcBot.Guilds.Enable)
+#                     70 - (NpcBot.Guilds.Chance)
+
+NpcBot.Guilds.Enable = 1
+NpcBot.Guilds.Chance = 70
+
+#
 #    NpcBot.WanderingBots.KillReward.Money
 #    NpcBot.WanderingBots.KillReward.ItemCount
 #    NpcBot.WanderingBots.KillReward.ItemQuality
@@ -5775,6 +5787,95 @@ NpcBot.Chatter.Reply.Chance = 50
 #        Default:     25
 
 NpcBot.Chatter.Event.Chance = 25
+
+#
+#    NpcBot.Chatter.OpenAI.Enable
+#        Description: Generate the answers of bots to players through the OpenAI Responses API.
+#                     Bots answer any message they hear (/say, party/raid, General, whispers), not only
+#                     greetings. One bot answers per message: the one addressed by name or target, one of
+#                     the speaker's own bots, or a random nearby bot (NpcBot.Chatter.Reply.Chance).
+#                     Falls back to the built-in texts if a request cannot be sent.
+#        Note:        Needs NpcBot.Chatter.Enable and an API key. Requests cost money, see the cooldown and
+#                     queue size below. Player messages are sent to OpenAI.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+NpcBot.Chatter.OpenAI.Enable = 0
+
+#
+#    NpcBot.Chatter.OpenAI.ApiKey
+#        Description: OpenAI API key. Can also be set with the environment variable
+#                     AC_NPC_BOT_CHATTER_OPEN_AI_API_KEY to keep it out of this file.
+#        Default:     ""
+
+NpcBot.Chatter.OpenAI.ApiKey = ""
+
+#
+#    NpcBot.Chatter.OpenAI.Model
+#    NpcBot.Chatter.OpenAI.ReasoningEffort
+#        Description: Model to use, and the reasoning effort for reasoning models ("minimal", "low", ...).
+#                     Leave ReasoningEffort empty for models without reasoning.
+#        Default:     "gpt-4.1-mini" - (NpcBot.Chatter.OpenAI.Model)
+#                     ""             - (NpcBot.Chatter.OpenAI.ReasoningEffort)
+
+NpcBot.Chatter.OpenAI.Model           = "gpt-4.1-mini"
+NpcBot.Chatter.OpenAI.ReasoningEffort = ""
+
+#
+#    NpcBot.Chatter.OpenAI.Endpoint
+#        Description: Responses API endpoint, any compatible https:// endpoint works.
+#        Default:     "https://api.openai.com/v1/responses"
+
+NpcBot.Chatter.OpenAI.Endpoint = "https://api.openai.com/v1/responses"
+
+#
+#    NpcBot.Chatter.OpenAI.Instructions
+#        Description: Extra instructions appended to the generated character description of the bot,
+#                     e.g. "Speak like a pirate."
+#        Default:     ""
+
+NpcBot.Chatter.OpenAI.Instructions = ""
+
+#
+#    NpcBot.Chatter.OpenAI.MaxOutputTokens
+#    NpcBot.Chatter.OpenAI.Timeout
+#        Description: Maximum tokens per answer (reasoning tokens included) and request timeout in seconds.
+#        Default:     120 - (NpcBot.Chatter.OpenAI.MaxOutputTokens)
+#                     15  - (NpcBot.Chatter.OpenAI.Timeout)
+
+NpcBot.Chatter.OpenAI.MaxOutputTokens = 120
+NpcBot.Chatter.OpenAI.Timeout         = 15
+
+#
+#    NpcBot.Chatter.OpenAI.Threads
+#    NpcBot.Chatter.OpenAI.QueueSize
+#    NpcBot.Chatter.OpenAI.PlayerCooldown
+#        Description: Parallel requests (not reloadable), maximum waiting requests, and seconds before
+#                     the same player can trigger another request.
+#        Default:     2  - (NpcBot.Chatter.OpenAI.Threads)
+#                     20 - (NpcBot.Chatter.OpenAI.QueueSize)
+#                     3  - (NpcBot.Chatter.OpenAI.PlayerCooldown)
+
+NpcBot.Chatter.OpenAI.Threads        = 2
+NpcBot.Chatter.OpenAI.QueueSize      = 20
+NpcBot.Chatter.OpenAI.PlayerCooldown = 3
+
+#
+#    NpcBot.Chatter.OpenAI.Emotes
+#        Description: Let bots answer with an emote (/wave, /laugh, ...) along with or instead of a
+#                     chat line. Needs a model supporting structured outputs.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.Chatter.OpenAI.Emotes = 1
+
+#
+#    NpcBot.Chatter.OpenAI.ChatContextSize
+#        Description: Number of recent party/raid or General channel messages (players and bots) given
+#                     to a bot answering in that chat.
+#        Default:     20
+
+NpcBot.Chatter.OpenAI.ChatContextSize = 20
 
 #
 ###################################################################################################
