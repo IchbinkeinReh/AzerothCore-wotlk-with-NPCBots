@@ -607,9 +607,7 @@ bool BotChatter::OnPlayerWhisper(Player* player, std::string const& botName, std
         return false;
 
     LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
-    Creature const* bot = BotDataMgr::FindBot(botName, locale);
-    if (!bot && locale != DEFAULT_LOCALE)
-        bot = BotDataMgr::FindBot(botName, DEFAULT_LOCALE);
+    Creature const* bot = BotDataMgr::FindBotByNameFor(botName, player);
 
     // hidden or despawned bots are "offline"
     if (!bot || !bot->IsInWorld() || !bot->GetBotAI())

@@ -74,6 +74,7 @@ void BotMgr::Initialize()
 
     BotDataMgr::LoadNpcBots();
     BotDataMgr::LoadNpcBotGuildNames();
+    BotDataMgr::LoadNpcBotRandomNames();
     BotDataMgr::LoadWanderMap();
     BotDataMgr::GenerateWanderingBots();
     BotDataMgr::CreateGeneratedBotsSortedGear();
@@ -882,10 +883,7 @@ bool BotMgr::InviteBotByName(Player* player, std::string const& name)
     if (!BotCfg::IsNpcBotModEnabled() || !BotDataMgr::AllBotsLoaded())
         return false;
 
-    LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
-    Creature const* cbot = BotDataMgr::FindBot(name, locale);
-    if (!cbot && locale != DEFAULT_LOCALE)
-        cbot = BotDataMgr::FindBot(name, DEFAULT_LOCALE);
+    Creature const* cbot = BotDataMgr::FindBotByNameFor(name, player);
     if (!cbot || !cbot->GetBotAI())
         return false;
 

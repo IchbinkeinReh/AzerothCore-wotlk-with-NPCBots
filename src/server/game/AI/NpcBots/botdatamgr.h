@@ -230,6 +230,7 @@ public:
 
     static void LoadNpcBotMgrData();
     static void LoadNpcBotGuildNames();
+    static void LoadNpcBotRandomNames();
 
     static void DeleteOldLogs();
 
@@ -252,6 +253,8 @@ public:
     static void UnregisterBot(Creature const* bot);
     static Creature const* FindBot(uint32 entry);
     static Creature const* FindBot(std::string_view name, LocaleConstant loc, std::vector<uint32> const* not_ids = nullptr);
+    // bot names are not unique: prefers a bot in world near the player
+    static Creature const* FindBotByNameFor(std::string_view name, Player const* player);
     static NpcBotRegistry const& GetExistingNPCBots();
     // pseudo-random but stable guild of a bot, empty if none
     static std::string const& GetBotGuildName(uint32 entry);

@@ -39,6 +39,7 @@
 
 #include <numeric>
 #include <set>
+#include <unordered_set>
 /*
 Npc Bot Data Manager by Trickerer (onlysuffering@gmail.com)
 NpcBots DB Data management
@@ -83,6 +84,7 @@ static bool allBotsLoaded = false;
 static uint32 next_wandering_bot_spawn_delay = 0;
 
 static std::vector<std::string> _botGuildNames;
+static std::array<std::vector<std::string>, 2> _botRandomNames; // per gender
 
 // /who list snapshot, rebuilt in the world thread (BotDataMgr::Update) and read by map threads (CMSG_WHO)
 struct BotWhoListEntry
@@ -457,6 +459,123 @@ private:
         for (uint8 c = BOT_CLASS_WARRIOR; c < BOT_CLASS_END; ++c)
             if (_spareBotIdsPerClassMap.contains(c) && _spareBotIdsPerClassMap.at(c).empty())
                 _spareBotIdsPerClassMap.erase(c);
+
+        InitRandomBotPools();
+    }
+
+    // random wandering bots: templates of a class serve as prototypes, looks and models come from all
+    // bots of a race and gender, names from creature_template_npcbot_names
+    using RaceGender = std::pair<uint8, uint8>;
+    std::map<uint8, std::vector<uint32>> prototypesPerClass;
+    std::map<RaceGender, std::vector<uint32>> displaysPerRaceGender;
+    std::map<RaceGender, std::array<std::vector<uint8>, 5>> appearancePerRaceGender;
+    std::unordered_set<std::string> usedNames;
+
+    void InitRandomBotPools()
+    {
+        for (auto const& [id, extras] : _botsExtras)
+        {
+            CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(id);
+            if (!proto)
+                continue;
+
+            std::string lname = proto->Name;
+            std::transform(lname.begin(), lname.end(), lname.begin(), ::tolower);
+            usedNames.insert(std::move(lname));
+
+            uint8 c = extras.bclass;
+            if (c == BOT_CLASS_NONE)
+                continue;
+            if (BotCfg::IsWanderingClassEnabled(c))
+                prototypesPerClass[c].push_back(id);
+
+            // player-like looks of the regular classes
+            NpcBotAppearanceData const* app = BotDataMgr::SelectNpcBotAppearance(id);
+            if (c >= BOT_CLASS_EX_START || !app || proto->Models.empty() || !proto->Models.front().CreatureDisplayID)
+                continue;
+
+            RaceGender key{ extras.race, app->gender };
+            displaysPerRaceGender[key].push_back(proto->Models.front().CreatureDisplayID);
+            auto& fields = appearancePerRaceGender[key];
+            for (auto [field, value] : { std::pair{ 0, app->skin }, { 1, app->face }, { 2, app->hair },
+                { 3, app->haircolor }, { 4, app->features } })
+                if (std::ranges::find(fields[field], value) == fields[field].end())
+                    fields[field].push_back(value);
+        }
+    }
+
+    std::string SelectRandomName(uint8 gender, std::string const& fallback)
+    {
+        std::vector<std::string> const& names = _botRandomNames[gender < _botRandomNames.size() ? gender : GENDER_MALE];
+        for (uint32 tries = 0; tries < 100 && !names.empty(); ++tries)
+        {
+            std::string const& name = Bcore::Containers::SelectRandomContainerElement(names);
+            std::string lname = name;
+            std::transform(lname.begin(), lname.end(), lname.begin(), ::tolower);
+            if (usedNames.contains(lname) || !sCharacterCache->GetCharacterGuidByName(name).IsEmpty())
+                continue;
+
+            usedNames.insert(std::move(lname));
+            return name;
+        }
+        return fallback;
+    }
+
+    struct RandomBotLook
+    {
+        uint32 protoEntry;
+        uint8 race;
+        uint8 gender;
+        uint32 displayId;
+        bool hasAppearance;
+        std::array<uint8, 5> appearance; // skin, face, hair, haircolor, features
+        std::string name;
+    };
+
+    // random race, gender, look and name for a class
+    bool CreateRandomBotLook(uint8 bot_class, RandomBotLook& look)
+    {
+        auto pitr = prototypesPerClass.find(bot_class);
+        if (pitr == prototypesPerClass.end() || pitr->second.empty())
+            return false;
+
+        look.protoEntry = Bcore::Containers::SelectRandomContainerElement(pitr->second);
+        CreatureTemplate const* proto = ASSERT_NOTNULL(sObjectMgr->GetCreatureTemplate(look.protoEntry));
+        NpcBotExtras const* protoExtras = ASSERT_NOTNULL(BotDataMgr::SelectNpcBotExtras(look.protoEntry));
+        NpcBotAppearanceData const* protoApp = BotDataMgr::SelectNpcBotAppearance(look.protoEntry);
+
+        // custom classes have fixed looks
+        look.race = protoExtras->race;
+        look.gender = protoApp ? protoApp->gender : uint8(GENDER_MALE);
+        look.displayId = proto->Models.empty() ? 0 : proto->Models.front().CreatureDisplayID;
+        look.hasAppearance = protoApp != nullptr;
+        if (protoApp)
+            look.appearance = { protoApp->skin, protoApp->face, protoApp->hair, protoApp->haircolor, protoApp->features };
+
+        if (bot_class < BOT_CLASS_EX_START)
+        {
+            const uint8 playerClass = BotMgr::GetBotPlayerClass(bot_class);
+            std::vector<RaceGender> choices;
+            for (auto const& [key, displays] : displaysPerRaceGender)
+                if (!displays.empty() && sObjectMgr->GetPlayerInfo(key.first, playerClass))
+                    choices.push_back(key);
+
+            if (!choices.empty())
+            {
+                RaceGender const& choice = Bcore::Containers::SelectRandomContainerElement(choices);
+                look.race = choice.first;
+                look.gender = choice.second;
+                look.displayId = Bcore::Containers::SelectRandomContainerElement(displaysPerRaceGender.at(choice));
+
+                auto const& fields = appearancePerRaceGender.at(choice);
+                auto pick = [&fields](uint8 field) { return Bcore::Containers::SelectRandomContainerElement(fields[field]); };
+                look.hasAppearance = true;
+                look.appearance = { pick(0), pick(1), pick(2), pick(3), pick(4) };
+            }
+        }
+
+        look.name = SelectRandomName(look.gender, proto->Name);
+        return true;
     }
 
     void GenerateDungeonBotToSpawn(std::tuple<uint32, uint8, uint8, uint32>&& entry_class_spec_roles, Player const* owner)
@@ -505,10 +624,17 @@ private:
 
         while (all_templates->contains(++next_bot_id));
 
-        const auto [bot_class, orig_entry] = spareBotPair;
+        // no spare bot: a random bot built from a prototype of the class
+        const auto [bot_class, spare_entry] = spareBotPair;
+        RandomBotLook look{};
+        if (!spare_entry && !CreateRandomBotLook(bot_class, look))
+            return false;
+
+        const uint32 orig_entry = spare_entry ? spare_entry : look.protoEntry;
         CreatureTemplate const* orig_template = ASSERT_NOTNULL(sObjectMgr->GetCreatureTemplate(orig_entry));
         NpcBotExtras const* orig_extras = ASSERT_NOTNULL(BotDataMgr::SelectNpcBotExtras(orig_entry));
-        uint32 bot_faction = BotDataMgr::GetDefaultFactionForBotRaceClass(bot_class, orig_extras->race);
+        const uint8 bot_race = spare_entry ? orig_extras->race : look.race;
+        uint32 bot_faction = BotDataMgr::GetDefaultFactionForBotRaceClass(bot_class, bot_race);
 
         NodeVec const* bot_spawn_nodes;
         TeamId bot_team = BotDataMgr::GetTeamIdForFaction(bot_faction);
@@ -542,7 +668,14 @@ private:
         bot_template.Entry = next_bot_id;
         bot_template.SubName = BotDataMgr::GetBotGuildName(next_bot_id);
         bot_template.speed_run = BotCfg::GetBotWandererSpeedMod();
-        bot_template.KillCredit[0] = orig_entry;
+        // random bots do not return a spare bot on despawn
+        bot_template.KillCredit[0] = spare_entry;
+        if (!spare_entry)
+        {
+            bot_template.Name = look.name;
+            if (look.displayId)
+                bot_template.Models = { CreatureModel(look.displayId, 1.0f, 1.0f) };
+        }
 
         uint32 max_level = DEFAULT_MAX_LEVEL;
         if (bracketEntry && BotCfg::IsBotLevelCappedByConfigBG())
@@ -585,8 +718,15 @@ private:
 
         uint8 bot_spec = BotDataMgr::SelectSpecForClass(bot_class);
         _botsData.emplace(std::piecewise_construct, std::forward_as_tuple(next_bot_id), std::forward_as_tuple(BotDataMgr::DefaultRolesForClass(bot_class, bot_spec), bot_faction, bot_spec));
-        _botsExtras.emplace(next_bot_id, NpcBotExtras{.race = orig_extras->race, .bclass = bot_class});
-        if (NpcBotAppearanceData const* orig_apdata = BotDataMgr::SelectNpcBotAppearance(orig_entry))
+        _botsExtras.emplace(next_bot_id, NpcBotExtras{.race = bot_race, .bclass = bot_class});
+        if (!spare_entry)
+        {
+            if (look.hasAppearance)
+                _botsAppearanceData.emplace(std::piecewise_construct, std::forward_as_tuple(next_bot_id),
+                    std::forward_as_tuple(look.gender, look.appearance[0], look.appearance[1], look.appearance[2],
+                        look.appearance[3], look.appearance[4]));
+        }
+        else if (NpcBotAppearanceData const* orig_apdata = BotDataMgr::SelectNpcBotAppearance(orig_entry))
             _botsAppearanceData.emplace(std::piecewise_construct, std::forward_as_tuple(next_bot_id), std::forward_as_tuple(orig_apdata->gender, orig_apdata->skin, orig_apdata->face, orig_apdata->hair, orig_apdata->haircolor, orig_apdata->features));
 
         int8 beqId = 1;
@@ -606,9 +746,12 @@ private:
         else
             _botsWanderCreaturesToSpawn.emplace_back(next_bot_id, spawnLoc);
 
-        _spareBotIdsPerClassMap.at(bot_class).erase(orig_entry);
-        if (_spareBotIdsPerClassMap.at(bot_class).empty())
-            _spareBotIdsPerClassMap.erase(bot_class);
+        if (spare_entry)
+        {
+            _spareBotIdsPerClassMap.at(bot_class).erase(spare_entry);
+            if (_spareBotIdsPerClassMap.at(bot_class).empty())
+                _spareBotIdsPerClassMap.erase(bot_class);
+        }
 
         return true;
     }
@@ -716,10 +859,16 @@ public:
             if (!found_maxlevel_node_a || !found_maxlevel_node_h || !found_maxlevel_node_n)
                 return false;
 
-            //make a full copy
-            for (auto const& [bot_class, spare_bots] : _spareBotIdsPerClassMap)
-                for (uint32 spareBotId : spare_bots)
-                    teamSpareBotIdsPerClass.emplace_back(bot_class, spareBotId);
+            // world wanderers are random bots of random enabled classes, spare bots stay untouched
+            std::vector<uint8> classes;
+            for (auto const& [bot_class, prototypes] : prototypesPerClass)
+                if (!prototypes.empty())
+                    classes.push_back(bot_class);
+            if (classes.empty())
+                return false;
+
+            for (uint32 i = 0; i < count; ++i)
+                teamSpareBotIdsPerClass.emplace_back(Bcore::Containers::SelectRandomContainerElement(classes), 0);
             bracketPcts = BotCfg::GetBotWandererLevelBrackets();
         }
         else
@@ -944,7 +1093,8 @@ public:
         _botsExtraCreatureEquipmentTemplates.erase(bwcetitr);
         _botsExtraCreatureTemplates.erase(bwctitr);
 
-        _spareBotIdsPerClassMap[bot_class].insert(original_id);
+        if (original_id)
+            _spareBotIdsPerClassMap[bot_class].insert(original_id);
     }
 
     static WanderingBotsGenerator* instance()
@@ -1008,6 +1158,30 @@ void BotDataMgr::LoadNpcBotGuildNames()
     }
 
     BOT_LOG_INFO("server.loading", ">> Loaded {} bot guild names in {} ms", uint32(_botGuildNames.size()),
+        GetMSTimeDiffToNow(oldMSTime));
+}
+
+void BotDataMgr::LoadNpcBotRandomNames()
+{
+    uint32 oldMSTime = getMSTime();
+
+    for (std::vector<std::string>& names : _botRandomNames)
+        names.clear();
+
+    QueryResult result = WorldDatabase.Query("SELECT name, gender FROM creature_template_npcbot_names");
+    if (result)
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            uint8 gender = fields[1].Get<uint8>();
+            if (gender < _botRandomNames.size())
+                _botRandomNames[gender].push_back(fields[0].Get<std::string>());
+        } while (result->NextRow());
+    }
+
+    BOT_LOG_INFO("server.loading", ">> Loaded {} male and {} female random bot names in {} ms",
+        uint32(_botRandomNames[GENDER_MALE].size()), uint32(_botRandomNames[GENDER_FEMALE].size()),
         GetMSTimeDiffToNow(oldMSTime));
 }
 
@@ -2169,16 +2343,6 @@ void BotDataMgr::GenerateWanderingBots()
     BOT_LOG_INFO("server.loading", "Spawning wandering bots...");
 
     uint32 oldMSTime = getMSTime();
-
-    uint32 maxbots = sBotGen->GetSpareBotsCount();
-    uint32 enabledbots = sBotGen->GetEnabledBotsCount();
-
-    if (maxbots < wandering_bots_desired)
-    {
-        BOT_LOG_FATAL("server.loading", "Only {} out of {} bots of enabled classes aren't spawned. Desired amount of wandering bots ({}) cannot be created. Aborting!",
-            maxbots, enabledbots, wandering_bots_desired);
-        ASSERT(false);
-    }
 
     uint32 spawned_count = 0;
     if (!sBotGen->GenerateWanderingBotsToSpawn(wandering_bots_desired, -1, -1, false, nullptr, nullptr, spawned_count))
@@ -3641,6 +3805,59 @@ Creature const* BotDataMgr::FindBot(std::string_view name, LocaleConstant loc, s
     }
 
     return nullptr;
+}
+
+Creature const* BotDataMgr::FindBotByNameFor(std::string_view name, Player const* player)
+{
+    std::wstring wname;
+    if (!Utf8toWStr(name, wname))
+        return nullptr;
+    wstrToLower(wname);
+
+    LocaleConstant loc = player->GetSession()->GetSessionDbLocaleIndex();
+
+    Creature const* best = nullptr;
+    uint8 bestScore = 0;
+    float bestDist = 0.0f;
+
+    std::shared_lock lock(*GetLock());
+    for (Creature const* bot : _existingBots)
+    {
+        std::string_view basename = bot->GetName();
+        std::string_view locname = basename;
+        if (CreatureLocale const* creatureInfo = sObjectMgr->GetCreatureLocale(bot->GetEntry()))
+            if (creatureInfo->Name.size() > loc && !creatureInfo->Name[loc].empty())
+                locname = creatureInfo->Name[loc];
+
+        bool matches = false;
+        for (std::string_view candidate : { locname, basename })
+        {
+            std::wstring wbname;
+            if (Utf8toWStr(candidate, wbname))
+            {
+                wstrToLower(wbname);
+                if (wbname == wname)
+                {
+                    matches = true;
+                    break;
+                }
+            }
+        }
+        if (!matches)
+            continue;
+
+        // 3: in world on the player's map, 2: in world, 1: not in world
+        uint8 score = !bot->IsInWorld() ? 1 : bot->GetMap() == player->GetMap() ? 3 : 2;
+        float dist = score == 3 ? bot->GetExactDist2d(player) : 0.0f;
+        if (score > bestScore || (score == 3 && bestScore == 3 && dist < bestDist))
+        {
+            best = bot;
+            bestScore = score;
+            bestDist = dist;
+        }
+    }
+
+    return best;
 }
 
 NpcBotRegistry const& BotDataMgr::GetExistingNPCBots()

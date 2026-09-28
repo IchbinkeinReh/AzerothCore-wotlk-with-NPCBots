@@ -5467,10 +5467,10 @@ NpcBot.DungeonBots.MaxItemLevel.Ratio = 0,0,0,0,0,0,0,0,0
 #
 #    NpcBot.WanderingBots.Continents.Count
 #        Description: Desired number of free wandering bots to generate. Wandering bots roam
-#                     around the map looking for trouble. Names and visuals are cloned from
-#                     existing non-spawned bots. Wandering bots aren't saved in DB.
+#                     around the map looking for trouble. They are random bots of the enabled
+#                     wandering classes: random race, gender, looks and a random name from
+#                     `creature_template_npcbot_names`. Wandering bots aren't saved in DB.
 #        Note:        Wandering bots keep grids loaded, increasing CPU and memory usage.
-#        Note2:       You must have at least this number of non-spawned bots in creature_template.
 #        Default:     0 - (Disabled)
 
 NpcBot.WanderingBots.Continents.Count = 0
