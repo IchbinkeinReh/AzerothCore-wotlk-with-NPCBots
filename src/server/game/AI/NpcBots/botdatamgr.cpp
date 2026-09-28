@@ -22,6 +22,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "ScriptMgr.h"
@@ -30,10 +31,13 @@
 #include "TemporarySummon.h"
 #include "StringConvert.h"
 #include "Tokenize.h"
+#include "Util.h"
 #include "World.h"
 #include "WorldDatabase.h"
+#include "WorldPacket.h"
 
 #include <numeric>
+#include <set>
 /*
 Npc Bot Data Manager by Trickerer (onlysuffering@gmail.com)
 NpcBots DB Data management
@@ -76,6 +80,21 @@ static BotGearSetStorageMap _botStoredGearSetMap;
 static bool allBotsLoaded = false;
 
 static uint32 next_wandering_bot_spawn_delay = 0;
+
+// /who list snapshot, rebuilt in the world thread (BotDataMgr::Update) and read by map threads (CMSG_WHO)
+struct BotWhoListEntry
+{
+    uint32 entry;
+    std::string name;
+    uint8 level;
+    uint8 playerClass;
+    uint8 playerRace;
+    uint8 gender;
+    uint32 zoneId;
+    TeamId team;
+};
+static std::vector<BotWhoListEntry> _botWhoList;
+static uint32 _botWhoListUpdateTimer = 0;
 
 static EventProcessor botSpawnEvents;
 static std::unordered_map<ObjectGuid, EventProcessor> botBGJoinEvents;
@@ -233,6 +252,94 @@ void BotDataMgr::DespawnWandererBot(uint32 entry)
         BOT_LOG_ERROR("npcbots", "DespawnWandererBot(): trying to despawn non-existing wanderer bot {} '{}'!", entry, bot ? bot->GetName() : "unknown");
 }
 
+// spawns one queued wandering bot at a spawn point in or next to a map grid where players are online (spawn points
+// are sparse, about one per town) and which is not crowded by wandering bots yet,
+// the spawn point must fit the bot's faction and level range
+static bool SpawnNextWandererBotNearPlayers()
+{
+    using GridKey = std::tuple<uint32 /*mapId*/, uint32 /*x*/, uint32 /*y*/>;
+
+    std::set<GridKey> player_grids;
+    for (auto const& [_, player] : ObjectAccessor::GetPlayers())
+    {
+        if (!player->IsInWorld() || !player->GetMap()->GetEntry()->IsWorldMap())
+            continue;
+
+        GridCoord g = Bcore::ComputeGridCoord(player->GetPositionX(), player->GetPositionY());
+        for (int32 dx = -1; dx <= 1; ++dx)
+        {
+            for (int32 dy = -1; dy <= 1; ++dy)
+            {
+                int32 x = int32(g.x_coord) + dx;
+                int32 y = int32(g.y_coord) + dy;
+                if (x >= 0 && y >= 0 && x < int32(MAX_NUMBER_OF_GRIDS) && y < int32(MAX_NUMBER_OF_GRIDS))
+                    player_grids.emplace(player->GetMapId(), uint32(x), uint32(y));
+            }
+        }
+    }
+
+    if (player_grids.empty())
+        return false;
+
+    std::map<GridKey, uint32> wanderers_per_grid;
+    for (Creature const* bot : _existingBots)
+    {
+        if (!bot->IsWandererBot() || !bot->IsInWorld())
+            continue;
+
+        GridCoord g = Bcore::ComputeGridCoord(bot->GetPositionX(), bot->GetPositionY());
+        GridKey key{ bot->GetMapId(), g.x_coord, g.y_coord };
+        if (player_grids.contains(key))
+            ++wanderers_per_grid[key];
+    }
+
+    const uint32 max_per_grid = BotCfg::GetMaxWanderingBotsPerGrid();
+    std::vector<WanderNode const*> nodes;
+    WanderNode::DoForAllWPs([&](WanderNode const* wp) {
+        if (!wp->HasFlag(BotWPFlags::BOTWP_FLAG_SPAWN))
+            return;
+
+        GridCoord g = Bcore::ComputeGridCoord(wp->m_positionX, wp->m_positionY);
+        GridKey key{ wp->GetMapId(), g.x_coord, g.y_coord };
+        if (!player_grids.contains(key))
+            return;
+
+        auto itr = wanderers_per_grid.find(key);
+        if (itr == wanderers_per_grid.end() || itr->second < max_per_grid)
+            nodes.push_back(wp);
+    });
+
+    if (nodes.empty())
+        return false;
+
+    std::vector<WanderNode const*> fitting_nodes;
+    for (auto itr = _botsWanderCreaturesToSpawn.begin(); itr != _botsWanderCreaturesToSpawn.end(); ++itr)
+    {
+        const uint32 bot_id = itr->first;
+        CreatureTemplate const& bot_template = _botsExtraCreatureTemplates.at(bot_id);
+        NpcBotData const* bot_data = ASSERT_NOTNULL(BotDataMgr::SelectNpcBotData(bot_id));
+
+        fitting_nodes.clear();
+        for (WanderNode const* wp : nodes)
+        {
+            auto [min_level, max_level] = wp->GetLevels();
+            if (min_level <= bot_template.maxlevel && max_level >= bot_template.minlevel &&
+                bot_ai::IsWanderNodeAvailableForBotFaction(wp, bot_data->faction, false, true))
+                fitting_nodes.push_back(wp);
+        }
+
+        if (fitting_nodes.empty())
+            continue;
+
+        WanderNode const* spawnLoc = Bcore::Containers::SelectRandomContainerElement(fitting_nodes);
+        _botsWanderCreaturesToSpawn.erase(itr);
+        SpawnWandererBot(bot_id, spawnLoc, nullptr);
+        return true;
+    }
+
+    return false;
+}
+
 static void SpawnDungeonBot(uint32 bot_id, Player const* owner)
 {
     CreatureTemplate const& bot_template = _botsExtraCreatureTemplates.at(bot_id);
@@ -258,6 +365,20 @@ static void SpawnDungeonBot(uint32 bot_id, Player const* owner)
     bot->setActive(true);
 
     ASSERT(owner->GetBotMgr()->AddDungeonBot(bot) == BOT_ADD_SUCCESS);
+}
+
+// hired wanderers: generated bots with no spawn to return to
+void BotDataMgr::DespawnGeneratedBot(uint32 entry)
+{
+    Creature const* bot = FindBot(entry);
+    if (bot && bot->GetBotAI() && bot->GetBotAI()->IsGeneratedBot())
+    {
+        bot->GetBotAI()->canUpdate = false;
+        _botsExtraCreaturesToDespawn.insert(entry);
+    }
+    else
+        BOT_LOG_ERROR("npcbots", "DespawnGeneratedBot(): trying to despawn non-generated bot {} '{}'!",
+            entry, bot ? bot->GetName() : "unknown");
 }
 
 void BotDataMgr::DespawnDungeonBot(uint32 entry)
@@ -830,8 +951,107 @@ public:
 };
 #define sBotGen WanderingBotsGenerator::instance()
 
+static void UpdateBotWhoList()
+{
+    _botWhoList.clear();
+    _botWhoList.reserve(_existingBots.size());
+
+    for (Creature const* bot : _existingBots)
+    {
+        bot_ai const* ai = bot->GetBotAI();
+        if (!ai || ai->IsTempBot() || bot->IsSummon() || !bot->IsInWorld())
+            continue;
+
+        // only wandering and hired bots, not the ones standing around waiting to be hired
+        if (bot->IsFreeBot() && !bot->IsWandererBot())
+            continue;
+
+        const uint32 zoneId = bot->GetZoneId();
+
+        NpcBotExtras const* extras = BotDataMgr::SelectNpcBotExtras(bot->GetEntry());
+        if (!extras)
+            continue;
+
+        NpcBotAppearanceData const* appearance = BotDataMgr::SelectNpcBotAppearance(bot->GetEntry());
+
+        _botWhoList.push_back({
+            .entry = bot->GetEntry(),
+            .name = bot->GetName(),
+            .level = bot->GetLevel(),
+            .playerClass = BotMgr::GetBotPlayerClass(extras->bclass),
+            .playerRace = BotMgr::GetBotPlayerRace(extras->bclass, extras->race),
+            .gender = appearance ? appearance->gender : uint8(GENDER_MALE),
+            .zoneId = zoneId,
+            .team = BotDataMgr::GetTeamIdForFaction(bot->GetFaction())
+        });
+    }
+}
+
+void BotDataMgr::AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& data, uint32& matchCount,
+    uint32& displayCount)
+{
+    for (BotWhoListEntry const& bot : _botWhoList)
+    {
+        if (!query.allTeams && bot.team != TEAM_NEUTRAL && bot.team != query.team)
+            continue;
+        if (bot.level < query.levelMin || bot.level > query.levelMax)
+            continue;
+        if (!(query.classMask & (1 << bot.playerClass)) || !(query.raceMask & (1 << bot.playerRace)))
+            continue;
+        if (!query.zoneIds.empty() && std::ranges::find(query.zoneIds, bot.zoneId) == query.zoneIds.end())
+            continue;
+        // bots are in no guild
+        if (!query.guild.empty())
+            continue;
+
+        std::string name = bot.name;
+        if (CreatureLocale const* creatureLocale = sObjectMgr->GetCreatureLocale(bot.entry))
+            if (creatureLocale->Name.size() > std::size_t(query.locale) && !creatureLocale->Name[query.locale].empty())
+                name = creatureLocale->Name[query.locale];
+
+        std::wstring wname;
+        if (!Utf8toWStr(name, wname))
+            continue;
+        wstrToLower(wname);
+
+        if (!query.name.empty() && wname.find(query.name) == std::wstring::npos)
+            continue;
+
+        std::string zoneName;
+        if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot.zoneId))
+            zoneName = zone->area_name[query.dbcLocale];
+
+        if (!query.strings.empty() && std::ranges::none_of(query.strings, [&wname, &zoneName](std::wstring const& str) {
+            return !str.empty() && (wname.find(str) != std::wstring::npos || Utf8FitTo(zoneName, str));
+        }))
+            continue;
+
+        if ((matchCount++) >= query.maxResults)
+            continue;
+
+        data << name;
+        data << "";
+        data << uint32(bot.level);
+        data << uint32(bot.playerClass);
+        data << uint32(bot.playerRace);
+        data << uint8(bot.gender);
+        data << uint32(bot.zoneId);
+
+        ++displayCount;
+    }
+}
+
 void BotDataMgr::Update(uint32 diff)
 {
+    static const uint32 BOT_WHO_LIST_UPDATE_DELAY = 5000;
+    if (_botWhoListUpdateTimer <= diff)
+    {
+        _botWhoListUpdateTimer = BOT_WHO_LIST_UPDATE_DELAY;
+        UpdateBotWhoList();
+    }
+    else
+        _botWhoListUpdateTimer -= diff;
+
     botSpawnEvents.Update(diff);
     for (auto& [_, events] : botBGJoinEvents)
         events.Update(diff);
@@ -885,8 +1105,22 @@ void BotDataMgr::Update(uint32 diff)
     if (!_botsWanderCreaturesToSpawn.empty())
     {
         static const uint32 WANDERING_BOT_SPAWN_DELAY = 500;
+        static const uint32 WANDERING_BOT_SPAWN_NO_PLAYERS_DELAY = 5000;
 
         next_wandering_bot_spawn_delay += diff;
+
+        if (BotCfg::SpawnWanderingBotsNearPlayers())
+        {
+            // wait longer if no queued bot fits any grid with players
+            static uint32 wandering_bot_spawn_delay = WANDERING_BOT_SPAWN_DELAY;
+            if (next_wandering_bot_spawn_delay >= wandering_bot_spawn_delay)
+            {
+                next_wandering_bot_spawn_delay = 0;
+                wandering_bot_spawn_delay = SpawnNextWandererBotNearPlayers() ?
+                    WANDERING_BOT_SPAWN_DELAY : WANDERING_BOT_SPAWN_NO_PLAYERS_DELAY;
+            }
+            return;
+        }
 
         while (next_wandering_bot_spawn_delay >= WANDERING_BOT_SPAWN_DELAY && !_botsWanderCreaturesToSpawn.empty())
         {

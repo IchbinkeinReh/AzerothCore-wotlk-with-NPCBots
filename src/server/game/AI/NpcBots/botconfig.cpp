@@ -141,6 +141,19 @@ static bool _bothk_achievements_enable;
 static bool _untarget_wnpc_questgiver;
 static bool _untarget_wnpc_flightmaster;
 static bool _wanderingFreeLootSkinning;
+static bool _wanderingSpawnNearPlayers;
+static uint32 _wanderingMaxPerGrid;
+static bool _chatterEnable;
+static bool _chatterHiredBots;
+static bool _chatterChannelEnable;
+static uint32 _chatterChannelCooldown;
+static uint32 _chatterIdleIntervalMin;
+static uint32 _chatterIdleIntervalMax;
+static uint32 _chatterIdleChance;
+static uint32 _chatterGreetChance;
+static uint32 _chatterGreetCooldown;
+static uint32 _chatterReplyChance;
+static uint32 _chatterEventChance;
 static float _botStatLimits_dodge;
 static float _botStatLimits_parry;
 static float _botStatLimits_block;
@@ -457,6 +470,8 @@ private:
         _killrewardWandererItemCount    = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.KillReward.ItemCount", 0);
         _killrewardWandererItemQuality  = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.KillReward.ItemQuality", int(ITEM_QUALITY_RARE));
         _wanderingFreeLootSkinning      = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.FreeLoot.Skinning", false);
+        _wanderingSpawnNearPlayers      = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Continents.SpawnNearPlayers", true);
+        _wanderingMaxPerGrid            = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Continents.MaxPerGrid", 100);
         _mult_xpgain_wanderer           = sConfigMgr->GetFloatDefault("NpcBot.WanderingBots.Continents.XPGain", 1.0f);
         _enableWanderingBotsBG          = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.BG.Enable", false);
         _enableConfigLevelCapBG         = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.BG.CapLevel", false);
@@ -471,6 +486,17 @@ private:
         _bothk_message_enable           = sConfigMgr->GetBoolDefault("NpcBot.HK.Message.Enable", false);
         _bothk_achievements_enable      = sConfigMgr->GetBoolDefault("NpcBot.HK.Achievements.Enable", false);
         _bothk_rate_honor               = sConfigMgr->GetFloatDefault("NpcBot.HK.Rate.Honor", 1.0);
+        _chatterEnable                  = sConfigMgr->GetBoolDefault("NpcBot.Chatter.Enable", true);
+        _chatterHiredBots               = sConfigMgr->GetBoolDefault("NpcBot.Chatter.HiredBots", false);
+        _chatterChannelEnable           = sConfigMgr->GetBoolDefault("NpcBot.Chatter.Channel.Enable", true);
+        _chatterChannelCooldown         = sConfigMgr->GetIntDefault("NpcBot.Chatter.Channel.Cooldown", 120);
+        _chatterIdleIntervalMin         = sConfigMgr->GetIntDefault("NpcBot.Chatter.Idle.IntervalMin", 60);
+        _chatterIdleIntervalMax         = sConfigMgr->GetIntDefault("NpcBot.Chatter.Idle.IntervalMax", 300);
+        _chatterIdleChance              = sConfigMgr->GetIntDefault("NpcBot.Chatter.Idle.Chance", 25);
+        _chatterGreetChance             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Greet.Chance", 30);
+        _chatterGreetCooldown           = sConfigMgr->GetIntDefault("NpcBot.Chatter.Greet.Cooldown", 900);
+        _chatterReplyChance             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Reply.Chance", 50);
+        _chatterEventChance             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Event.Chance", 25);
 
         if (reload)
             BotLogger::Log(NPCBOT_LOG_CONFIG_RELOAD, uint32(0));
@@ -681,6 +707,12 @@ private:
         RoundToInterval(_killrewardWandererItemCount, uint32(0), uint32(MAX_NR_LOOT_ITEMS));
         RoundToInterval(_killrewardWandererItemQuality, uint32(ITEM_QUALITY_POOR), uint32(ITEM_QUALITY_HEIRLOOM));
         RoundToInterval(_maxSharedOwners, uint8(0), uint8(MAXRAIDSIZE - 1));
+        RoundToInterval(_chatterIdleIntervalMin, uint32(10), uint32(DAY));
+        RoundToInterval(_chatterIdleIntervalMax, _chatterIdleIntervalMin, uint32(DAY));
+        RoundToInterval(_chatterIdleChance, uint32(0), uint32(100));
+        RoundToInterval(_chatterGreetChance, uint32(0), uint32(100));
+        RoundToInterval(_chatterReplyChance, uint32(0), uint32(100));
+        RoundToInterval(_chatterEventChance, uint32(0), uint32(100));
 
         if ((_shared_ownership_options | SHARED_OWNER_OPTION_MASK_ALL) != SHARED_OWNER_OPTION_MASK_ALL)
         {
@@ -1250,6 +1282,59 @@ uint32 BotCfg::GetBotWandererKillRewardItemMaxQuality()
 bool BotCfg::EnableWandererFreeLootSkinning()
 {
     return _wanderingFreeLootSkinning;
+}
+bool BotCfg::SpawnWanderingBotsNearPlayers()
+{
+    return _wanderingSpawnNearPlayers;
+}
+uint32 BotCfg::GetMaxWanderingBotsPerGrid()
+{
+    return _wanderingMaxPerGrid;
+}
+
+bool BotCfg::IsBotChatterEnabled()
+{
+    return _chatterEnable;
+}
+bool BotCfg::IsBotChatterHiredBotsEnabled()
+{
+    return _chatterHiredBots;
+}
+bool BotCfg::IsBotChatterChannelEnabled()
+{
+    return _chatterChannelEnable;
+}
+uint32 BotCfg::GetBotChatterChannelCooldown()
+{
+    return _chatterChannelCooldown;
+}
+uint32 BotCfg::GetBotChatterIdleIntervalMin()
+{
+    return _chatterIdleIntervalMin;
+}
+uint32 BotCfg::GetBotChatterIdleIntervalMax()
+{
+    return _chatterIdleIntervalMax;
+}
+uint32 BotCfg::GetBotChatterIdleChance()
+{
+    return _chatterIdleChance;
+}
+uint32 BotCfg::GetBotChatterGreetChance()
+{
+    return _chatterGreetChance;
+}
+uint32 BotCfg::GetBotChatterGreetCooldown()
+{
+    return _chatterGreetCooldown;
+}
+uint32 BotCfg::GetBotChatterReplyChance()
+{
+    return _chatterReplyChance;
+}
+uint32 BotCfg::GetBotChatterEventChance()
+{
+    return _chatterEventChance;
 }
 
 uint32 BotCfg::GetBotDungeonMaxItemLevel(uint8 level, uint16 map_id, Difficulty map_difficulty)

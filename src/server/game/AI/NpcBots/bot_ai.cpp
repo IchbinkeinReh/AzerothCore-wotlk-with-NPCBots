@@ -158,7 +158,8 @@ static void ApplyBotPercentModFloatVar(float &var, float val, bool apply)
 
 bot_ai::bot_ai(Creature* creature) : CreatureAI(creature),
     _botData(const_cast<NpcBotData*>(BotDataMgr::SelectNpcBotData(IsTempBot() ? creature->ToTempSummon()->GetSummonerGUID().GetEntry() : creature->GetEntry()))),
-    _botExtras(BotDataMgr::SelectNpcBotExtras(creature->GetEntry()))
+    _botExtras(BotDataMgr::SelectNpcBotExtras(creature->GetEntry())),
+    _chatter(this, creature)
 {
     _checkMasterTimer = me->IsSummon() ? 0 : urand(5000, 15000);
     _updateTimerLong = urand(15000, 25000);
@@ -277,7 +278,7 @@ void bot_ai::ReportSpellCast(uint32 spellId, const std::string& followedByString
     BotWhisper(spellName + followedByString, target);
 }
 
-bool bot_ai::SetBotOwner(Player* newowner)
+bool bot_ai::SetBotOwner(Player* newowner, bool chargeHireCost)
 {
     ASSERT(newowner, "Trying to set NULL owner!!!");
     ASSERT(newowner->GetGUID().IsPlayer(), "Trying to set a non-player as owner!!!");
@@ -296,7 +297,7 @@ bool bot_ai::SetBotOwner(Player* newowner)
         return false;
     }
 
-    if (newowner->GetBotMgr()->AddBot(me) & BOT_ADD_FATAL)
+    if (newowner->GetBotMgr()->AddBot(me, chargeHireCost) & BOT_ADD_FATAL)
     {
         _checkMasterTimer += 30000;
         return false;
@@ -2184,11 +2185,17 @@ void bot_ai::SetStats(bool force)
     //LEVEL
     if (me->GetLevel() != mylevel)
     {
+        //leveled up through kills, not initial level selection
+        bool levelUp = me->GetLevel() < mylevel && IsWanderer() && _killsCount && me->IsInWorld();
+
         if (me->GetLevel() > mylevel)
             UnsummonAll(false);
 
         me->SetLevel(mylevel);
         force = true; //reinit spells/passives/other
+
+        if (levelUp)
+            _chatter.OnLevelUp();
     }
     if (force)
     {
@@ -15981,6 +15988,8 @@ void bot_ai::KilledUnit(Unit* u)
     if (u->isType(TYPEMASK_PLAYER))
         ++_playerKillsCount;
 
+    _chatter.OnKilledUnit(u);
+
     if (IsWanderer())
     {
         shouldUpdateStats = true;
@@ -17788,6 +17797,8 @@ bool bot_ai::GlobalUpdate(uint32 diff)
                 me->GetName().c_str(), me->GetEntry(), uint32(_botclass), uint32(me->GetLevel()));
         return false;
     }
+
+    _chatter.Update(diff);
 
     if (doHealth)
     {
@@ -20437,6 +20448,18 @@ void bot_ai::SetWanderer()
         if (botPet)
             botPet->GetBotPetAI()->SetWanderer();
     }
+}
+
+void bot_ai::ClearWanderer()
+{
+    _wanderer = false;
+    if (botPet)
+        botPet->GetBotPetAI()->ClearWanderer();
+}
+
+bool bot_ai::IsGeneratedBot() const
+{
+    return !me->GetSpawnId() && !IsTempBot() && !me->IsSummon();
 }
 
 void bot_ai::KillEvents(bool force)

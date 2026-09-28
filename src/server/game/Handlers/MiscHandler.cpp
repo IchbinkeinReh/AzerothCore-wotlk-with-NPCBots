@@ -56,6 +56,10 @@
 
 #include "Corpse.h"
 
+//npcbot
+#include "botdatamgr.h"
+//end npcbot
+
 void WorldSession::HandleRepopRequestOpcode(WorldPacket& recv_data)
 {
     LOG_DEBUG("network", "WORLD: Recvd CMSG_REPOP_REQUEST Message");
@@ -405,6 +409,27 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
 
         ++displaycount;
     }
+
+    //npcbot
+    {
+        BotWhoListQuery query{
+            .levelMin = levelMin,
+            .levelMax = levelMax,
+            .raceMask = racemask,
+            .classMask = classmask,
+            .zoneIds = { zoneids.begin(), zoneids.begin() + zonesCount },
+            .name = wpacketPlayerName,
+            .guild = wpacketGuildName,
+            .strings = { std::begin(str), std::begin(str) + strCount },
+            .team = _player->GetTeamId(),
+            .allTeams = HasPermission(rbac::RBAC_PERM_TWO_SIDE_WHO_LIST),
+            .locale = GetSessionDbLocaleIndex(),
+            .dbcLocale = GetSessionDbcLocale(),
+            .maxResults = sWorld->getIntConfig(CONFIG_MAX_WHO_LIST_RETURN)
+        };
+        BotDataMgr::AppendBotsToWhoList(query, data, matchCount, displaycount);
+    }
+    //end npcbot
 
     data.put(0, displaycount);                            // insert right count, count displayed
     data.put(4, matchCount);                              // insert right count, count of matches

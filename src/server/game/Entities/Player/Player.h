@@ -2703,6 +2703,7 @@ public:
     uint8 GetNpcBotsCount() const;
     void RemoveAllBots(uint8 removetype = 0);
     void UpdatePhaseForBots();
+    std::list<Channel*> const& GetJoinedChannelsForBots() const { return m_channels; }
     /*****************************************************************/
     /***                      END NPCBOT SYSTEM                    ***/
     /*****************************************************************/

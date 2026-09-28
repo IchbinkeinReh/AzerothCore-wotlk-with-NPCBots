@@ -5504,6 +5504,25 @@ NpcBot.WanderingBots.Continents.Maps = 0,1,530,571
 NpcBot.WanderingBots.Continents.XPGain = 1.0
 
 #
+#    NpcBot.WanderingBots.Continents.SpawnNearPlayers
+#        Description: Only spawn wandering bots at spawn points in or next to map grids (533x533 yards)
+#                     where players are online.
+#                     Bots without a fitting spawn point (faction, level range) wait until players
+#                     enter one. Already spawned bots keep wandering.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled, spawn all bots at random spawn points right after startup)
+
+NpcBot.WanderingBots.Continents.SpawnNearPlayers = 1
+
+#
+#    NpcBot.WanderingBots.Continents.MaxPerGrid
+#        Description: With NpcBot.WanderingBots.Continents.SpawnNearPlayers enabled, only spawn a bot
+#                     in a map grid (533x533 yards) holding fewer wandering bots than this.
+#        Default:     100
+
+NpcBot.WanderingBots.Continents.MaxPerGrid = 100
+
+#
 #    NpcBot.WanderingBots.KillReward.Money
 #    NpcBot.WanderingBots.KillReward.ItemCount
 #    NpcBot.WanderingBots.KillReward.ItemQuality
@@ -5682,6 +5701,80 @@ NpcBot.HK.Rate.Honor = 1.0
 #                     1 - (Enabled)
 
 NpcBot.Premade.Enable = 0
+
+#
+#    NpcBot.Chatter.Enable
+#        Description: Let bots talk: greet nearby players, answer greetings ("hello", "bye") said in
+#                     /say, party/raid chat or the General channel, comment on kills and level-ups
+#                     and occasionally chat in /say or the zone's General channel.
+#                     Players can also whisper bots by name (/w <bot name>).
+#        Note:        Texts are stored in `npc_text` (IDs 71001-71100) and translated in `npc_text_locale`.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.Chatter.Enable = 1
+
+#
+#    NpcBot.Chatter.HiredBots
+#        Description: Let hired bots chatter on their own too (greet players, idle talk, kills).
+#                     Hired bots always answer their owner, and anyone addressing them by name or target.
+#        Default:     0 - (Disabled, only free and wandering bots chatter)
+#                     1 - (Enabled)
+
+NpcBot.Chatter.HiredBots = 0
+
+#
+#    NpcBot.Chatter.Channel.Enable
+#    NpcBot.Chatter.Channel.Cooldown
+#        Description: Allow bots to post idle talk, notable kills and level-ups to the General channel
+#                     of their zone, and the minimum time in seconds between two such posts per zone.
+#        Default:     1   - (NpcBot.Chatter.Channel.Enable)
+#                     120 - (NpcBot.Chatter.Channel.Cooldown)
+
+NpcBot.Chatter.Channel.Enable   = 1
+NpcBot.Chatter.Channel.Cooldown = 120
+
+#
+#    NpcBot.Chatter.Idle.IntervalMin
+#    NpcBot.Chatter.Idle.IntervalMax
+#    NpcBot.Chatter.Idle.Chance
+#        Description: Every IntervalMin-IntervalMax seconds a bot has Chance (%) to say something
+#                     unprompted.
+#        Default:     60  - (NpcBot.Chatter.Idle.IntervalMin)
+#                     300 - (NpcBot.Chatter.Idle.IntervalMax)
+#                     25  - (NpcBot.Chatter.Idle.Chance)
+
+NpcBot.Chatter.Idle.IntervalMin = 60
+NpcBot.Chatter.Idle.IntervalMax = 300
+NpcBot.Chatter.Idle.Chance      = 25
+
+#
+#    NpcBot.Chatter.Greet.Chance
+#    NpcBot.Chatter.Greet.Cooldown
+#        Description: Chance (%) for a bot to greet a player walking by, and the time in seconds before
+#                     the same bot considers greeting that player again.
+#        Default:     30  - (NpcBot.Chatter.Greet.Chance)
+#                     900 - (NpcBot.Chatter.Greet.Cooldown)
+
+NpcBot.Chatter.Greet.Chance   = 30
+NpcBot.Chatter.Greet.Cooldown = 900
+
+#
+#    NpcBot.Chatter.Reply.Chance
+#        Description: Chance (%) for each bot to answer a greeting said to no one in particular
+#                     (at most 2 bots answer). A bot addressed by name or target always answers, and
+#                     one of the speaker's own bots always answers.
+#        Default:     50
+
+NpcBot.Chatter.Reply.Chance = 50
+
+#
+#    NpcBot.Chatter.Event.Chance
+#        Description: Chance (%) for a bot to comment on a notable kill (elite, rare, boss, player)
+#                     or a level-up. Routine kills use a fifth of this chance.
+#        Default:     25
+
+NpcBot.Chatter.Event.Chance = 25
 
 #
 ###################################################################################################

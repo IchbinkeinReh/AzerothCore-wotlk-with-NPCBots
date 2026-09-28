@@ -85,6 +85,11 @@ void WorldSession::HandleGroupInviteOpcode(WorldPacket& recvData)
     Player* invitingPlayer = GetPlayer();
     Player* invitedPlayer = ObjectAccessor::FindPlayerByName(membername, false);
 
+    //npcbot: no such player, maybe a bot: inviting a bot hires it
+    if (!invitedPlayer && BotMgr::InviteBotByName(invitingPlayer, membername))
+        return;
+    //end npcbot
+
     // no player or cheat self-invite
     if (!invitedPlayer || invitedPlayer == invitingPlayer)
     {

@@ -1,6 +1,7 @@
 #ifndef BOT_AI_H
 #define BOT_AI_H
 
+#include "botchatter.h"
 #include "botcommon.h"
 
 #include "CreatureAI.h"
@@ -125,11 +126,12 @@ public:
     void GetNextEvadeMovePoint(Position& pos, bool& use_path) const;
 
     EventProcessor* GetEvents() { return &Events; }
+    BotChatter& GetChatter() { return _chatter; }
     ObjectGuid::LowType GetBotOwnerGuid() const;
     bool HasSharedOwner(ObjectGuid::LowType guid_low) const;
     bool HasOwner(ObjectGuid::LowType guid_low) const;
     Player* GetBotOwner() const { return master; }
-    bool SetBotOwner(Player* newowner);
+    bool SetBotOwner(Player* newowner, bool chargeHireCost = true);
     void CheckOwnerExpiry();
     uint8 GetBotClass() const { return _botclass; }
     uint32 GetBotClassMask0() const { return 1ul << (_botclass - 1u); }
@@ -194,6 +196,9 @@ public:
     //wandering bots
     bool IsWanderer() const { return _wanderer; }
     void SetWanderer();
+    void ClearWanderer();
+    // generated at runtime (wanderers, hired wanderers): no spawn to return to, not saved
+    bool IsGeneratedBot() const;
     static bool IsWanderNodeAvailableForBotFaction(WanderNode const* wp, uint32 factionTemplateId, bool teleport, bool spawn = false);
     WanderNode const* GetClosestWanderNode() const;
     WanderNode const* GetNextWanderNode(Position const* fromPos, uint8 lvl, bool random) const;
@@ -777,6 +782,8 @@ private:
     uint16 _killsCount{};
     uint16 _pvpKillsCount{};
     uint16 _playerKillsCount{};
+
+    BotChatter _chatter;
 
     TeleportHomeEvent* teleHomeEvent{};
     TeleportFinishEvent* teleFinishEvent{};

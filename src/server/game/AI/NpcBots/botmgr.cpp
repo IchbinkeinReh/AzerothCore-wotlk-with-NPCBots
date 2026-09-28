@@ -31,6 +31,7 @@
 #include "Transport.h"
 #include "Vehicle.h"
 #include "World.h"
+#include "WorldSession.h"
 #include "GitRevision.h"
 /*
 Npc Bot Manager by Trickerer (onlysuffering@gmail.com)
@@ -788,6 +789,16 @@ void BotMgr::RemoveBot(ObjectGuid guid, uint8 removetype)
     else if (!_delayedRemoveList.empty())
         std::erase_if(_delayedRemoveList, [=](decltype(_delayedRemoveList)::value_type const& p) { return p.first == guid; });
 
+    // hired wanderer: cannot go home nor be saved, leaves the world like a dungeon bot
+    if (bot->GetBotAI()->IsGeneratedBot())
+    {
+        CleanupsBeforeBotDelete(guid, removetype);
+        _bots.erase(itr);
+        bot->GetBotAI()->ResetBotAI(BOTAI_RESET_LOGOUT | BOTAI_RESET_DISMISS);
+        BotDataMgr::DespawnGeneratedBot(bot->GetEntry());
+        return;
+    }
+
     if (bot->IsSummon() && !bot->GetBotAI()->IsTempBot())
     {
         RemoveBotFromBGQueue(bot);
@@ -865,7 +876,144 @@ BotAddResult BotMgr::AddDungeonBot(Creature* bot)
     return BOT_ADD_SUCCESS;
 }
 
-BotAddResult BotMgr::AddBot(Creature* bot)
+bool BotMgr::InviteBotByName(Player* player, std::string const& name)
+{
+    if (!BotCfg::IsNpcBotModEnabled() || !BotDataMgr::AllBotsLoaded())
+        return false;
+
+    LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
+    Creature const* cbot = BotDataMgr::FindBot(name, locale);
+    if (!cbot && locale != DEFAULT_LOCALE)
+        cbot = BotDataMgr::FindBot(name, DEFAULT_LOCALE);
+    if (!cbot || !cbot->GetBotAI())
+        return false;
+
+    Creature* bot = const_cast<Creature*>(cbot);
+    bot_ai* ai = bot->GetBotAI();
+    WorldSession* session = player->GetSession();
+
+    if (Group const* group = player->GetGroup())
+    {
+        if (!group->IsLeader(player->GetGUID()) && !group->IsAssistant(player->GetGUID()))
+        {
+            session->SendPartyResult(PARTY_OP_INVITE, "", ERR_NOT_LEADER);
+            return true;
+        }
+        if (group->IsMember(bot->GetGUID()))
+        {
+            session->SendPartyResult(PARTY_OP_INVITE, bot->GetName(), ERR_ALREADY_IN_GROUP_S);
+            return true;
+        }
+    }
+
+    // own bot: just take it into the group
+    if (player->HaveBot() && player->GetBotMgr()->GetBot(bot->GetGUID()))
+    {
+        if (!player->GetBotMgr()->AddBotToGroup(bot))
+            session->SendPartyResult(PARTY_OP_INVITE, bot->GetName(), ERR_GROUP_FULL);
+        return true;
+    }
+
+    ChatHandler ch(session);
+
+    if (ai->GetBotOwnerGuid())
+    {
+        ch.PSendSysMessage(bot_ai::LocalizedNpcText(player, BOT_TEXT_HIREFAIL_OWNED).c_str(), bot->GetName());
+        return true;
+    }
+
+    if (ai->IsWanderer())
+    {
+        // wandering bots can be hired in any state: fighting, casting or dead (revived on hire)
+        if (!BotCfg::IsWanderingClassEnabled(ai->GetBotClass()) || ai->GetBG() || ai->IsDuringTeleport() ||
+            !bot->IsInWorld() || bot->GetMap()->IsBattlegroundOrArena())
+        {
+            ch.SendSysMessage(bot->GetName() + bot_ai::LocalizedNpcText(player, BOT_TEXT_BOTGIVER__BOT_BUSY));
+            return true;
+        }
+
+        TeamId botTeam = BotDataMgr::GetTeamIdForFaction(bot->GetFaction());
+        if (botTeam != TEAM_NEUTRAL && botTeam != player->GetTeamId() && !player->IsGameMaster() &&
+            !sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GROUP))
+        {
+            session->SendPartyResult(PARTY_OP_INVITE, bot->GetName(), ERR_PLAYER_WRONG_FACTION);
+            return true;
+        }
+    }
+    else
+    {
+        // same availability rules as the hire option of the bot's gossip menu
+        bool hireable = ai->IAmFree() && !ai->IsTempBot() && !bot->IsSummon() &&
+            BotCfg::IsClassEnabled(ai->GetBotClass());
+        bool busy = bot->IsInCombat() || !bot->IsAlive() || bot_ai::CCed(bot) ||
+            bot->HasUnitState(UNIT_STATE_CASTING) || bot->HasAura(BERSERK) || ai->IsDuringTeleport();
+        if (!hireable || busy)
+        {
+            ch.SendSysMessage(bot->GetName() + bot_ai::LocalizedNpcText(player, BOT_TEXT_BOTGIVER__BOT_BUSY));
+            return true;
+        }
+    }
+
+    return HireInvitedBot(player, bot);
+}
+
+// hires an invited bot like the hire option of the gossip menu does, but free of charge
+bool BotMgr::HireInvitedBot(Player* player, Creature* bot)
+{
+    bot_ai* ai = bot->GetBotAI();
+    WorldSession* session = player->GetSession();
+    ChatHandler ch(session);
+
+    // same requirements as the hire option of the gossip menu
+    uint8 minLevel = BotDataMgr::GetMinLevelForBotClass(ai->GetBotClass());
+    if (player->GetLevel() < minLevel)
+    {
+        uint32 textId;
+        switch (minLevel)
+        {
+            case 20: textId = BOT_TEXT_HIREFAIL_LVL20; break;
+            case 40: textId = BOT_TEXT_HIREFAIL_LVL40; break;
+            case 55: textId = BOT_TEXT_HIREFAIL_LVL55; break;
+            default: textId = BOT_TEXT_HIREFAIL_LVL60; break;
+        }
+        ch.PSendSysMessage(bot_ai::LocalizedNpcText(player, textId).c_str(), bot->GetName());
+        return true;
+    }
+
+    if (uint32 maxBotsPerAccount = BotCfg::GetMaxAccountBots())
+    {
+        uint32 accountBotsCount = BotDataMgr::GetAccountBotsCount(session->GetAccountId());
+        if (accountBotsCount >= maxBotsPerAccount)
+        {
+            ch.PSendSysMessage(bot_ai::LocalizedNpcText(player, BOT_TEXT_HIREFAIL_MAXBOTS_ACCOUNT).c_str(),
+                accountBotsCount, maxBotsPerAccount);
+            return true;
+        }
+    }
+
+    if (bot->HasUnitState(UNIT_STATE_CASTING))
+        bot->InterruptNonMeleeSpells(false);
+
+    // a wanderer becomes a normal hired bot, bot limits are checked on adding
+    bool wanderer = ai->IsWanderer();
+    if (wanderer)
+        ai->ClearWanderer();
+    if (!ai->SetBotOwner(player, false))
+    {
+        if (wanderer)
+            ai->SetWanderer();
+        return true;
+    }
+
+    bot->Whisper(bot_ai::LocalizedNpcText(player, BOT_TEXT_HIRE_SUCCESS), LANG_UNIVERSAL, player);
+
+    if (!player->GetBotMgr()->AddBotToGroup(bot))
+        session->SendPartyResult(PARTY_OP_INVITE, bot->GetName(), ERR_GROUP_FULL);
+
+    return true;
+}
+
+BotAddResult BotMgr::AddBot(Creature* bot, bool chargeHireCost)
 {
     ASSERT(bot->IsNPCBot());
     ASSERT(bot->GetBotAI() != nullptr);
@@ -912,7 +1060,7 @@ BotAddResult BotMgr::AddBot(Creature* bot)
     //        return BOT_ADD_INSTANCE_LIMIT;
     //    }
     //}
-    if (!owned)
+    if (!owned && chargeHireCost)
     {
         uint32 cost = BotCfg::GetNpcBotCostHire(_owner->GetLevel(), bot->GetBotClass());
         if (!_owner->HasEnoughMoney(cost))

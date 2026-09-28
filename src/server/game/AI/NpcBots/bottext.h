@@ -436,6 +436,28 @@ enum BotTexts : uint32
     BOT_TEXT_SHARED_WITH                    = 70699, //"Shared with"
     BOT_TEXT_OWNER                          = 70700, //"Owner"
     //70701-71000 reserved for custom localization strings
+
+    //71001-71100 reserved for bot chatter texts, see botchatter.h
+    //each text id holds up to 8 random variants (text0_0 - text7_0)
+    BOT_TEXT_CHATTER_KEYWORDS_GREET         = 71001, //"hello|hi|hey|greetings|..." (lowercase, '|'-separated)
+    BOT_TEXT_CHATTER_KEYWORDS_BYE           = 71002, //"bye|goodbye|farewell|..." (lowercase, '|'-separated)
+    BOT_TEXT_CHATTER_GREET_1                = 71003, //"Hello, %target!"
+    BOT_TEXT_CHATTER_GREET_2                = 71004,
+    BOT_TEXT_CHATTER_GREET_REPLY            = 71005, //"Hi there, %target."
+    BOT_TEXT_CHATTER_BYE_REPLY              = 71006, //"Farewell, %target."
+    BOT_TEXT_CHATTER_IDLE_1                 = 71007, //"Anyone up for some adventure in %zone?"
+    BOT_TEXT_CHATTER_IDLE_2                 = 71008,
+    BOT_TEXT_CHATTER_IDLE_3                 = 71009,
+    BOT_TEXT_CHATTER_KILL_NORMAL            = 71010, //"Another %target down."
+    BOT_TEXT_CHATTER_KILL_ELITE             = 71011,
+    BOT_TEXT_CHATTER_KILL_RARE              = 71012,
+    BOT_TEXT_CHATTER_KILL_BOSS              = 71013,
+    BOT_TEXT_CHATTER_KILL_PLAYER            = 71014,
+    BOT_TEXT_CHATTER_LEVEL_UP               = 71015, //"Ding! Level %level!"
+    BOT_TEXT_CHATTER_UNKNOWN_AREA           = 71016, //"somewhere"
+    BOT_TEXT_CHATTER_WHISPER_REPLY          = 71017, //"What's up, %target?"
+    BOT_TEXT_CHATTER_WHISPER_BUSY           = 71018, //"Busy fighting, talk later!"
+    //71019-71100 reserved for bot chatter texts
 };
 
 #endif //BOTTEXT_H

@@ -43,6 +43,10 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
+//npcbot
+#include "botchatter.h"
+//end npcbot
+
 inline bool isNasty(uint8 c)
 {
     if (c == '\t')
@@ -380,7 +384,12 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
                 }
 
                 if (type == CHAT_MSG_SAY)
+                {
                     sender->Say(msg, Language(lang));
+                    //npcbot
+                    BotChatter::OnPlayerSay(sender, msg);
+                    //end npcbot
+                }
                 else if (type == CHAT_MSG_EMOTE)
                     sender->TextEmote(msg);
                 else if (type == CHAT_MSG_YELL)
@@ -396,6 +405,10 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
                 }
 
                 Player* receiver = ObjectAccessor::FindPlayerByName(to, false);
+                //npcbot: no such player, maybe a bot
+                if (!receiver && lang != LANG_ADDON && BotChatter::OnPlayerWhisper(sender, to, msg))
+                    break;
+                //end npcbot
                 bool senderIsPlayer = !HasPermission(rbac::RBAC_PERM_TWO_SIDE_INTERACTION_CHAT);
                 bool receiverIsPlayer = receiver ? !receiver->GetSession()->HasPermission(rbac::RBAC_PERM_TWO_SIDE_INTERACTION_CHAT) : true;
 
@@ -469,6 +482,9 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
                 WorldPacket data;
                 ChatHandler::BuildChatPacket(data, ChatMsg(type), Language(lang), sender, nullptr, msg);
                 group->BroadcastPacket(&data, false, group->GetMemberGroup(GetPlayer()->GetGUID()));
+                //npcbot
+                BotChatter::OnPlayerGroupChat(sender, group, ChatMsg(type), msg);
+                //end npcbot
             }
             break;
         case CHAT_MSG_GUILD:
@@ -516,6 +532,9 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
                 WorldPacket data;
                 ChatHandler::BuildChatPacket(data, CHAT_MSG_RAID, Language(lang), sender, nullptr, msg);
                 group->BroadcastPacket(&data, false);
+                //npcbot
+                BotChatter::OnPlayerGroupChat(sender, group, CHAT_MSG_RAID, msg);
+                //end npcbot
             }
             break;
         case CHAT_MSG_RAID_LEADER:
@@ -535,6 +554,9 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
                 WorldPacket data;
                 ChatHandler::BuildChatPacket(data, CHAT_MSG_RAID_LEADER, Language(lang), sender, nullptr, msg);
                 group->BroadcastPacket(&data, false);
+                //npcbot
+                BotChatter::OnPlayerGroupChat(sender, group, CHAT_MSG_RAID_LEADER, msg);
+                //end npcbot
             }
             break;
         case CHAT_MSG_RAID_WARNING:
@@ -601,6 +623,9 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
                             return;
 
                         chn->Say(sender->GetGUID(), msg.c_str(), lang);
+                        //npcbot
+                        BotChatter::OnPlayerChannelChat(sender, chn, msg);
+                        //end npcbot
                     }
                 }
             }

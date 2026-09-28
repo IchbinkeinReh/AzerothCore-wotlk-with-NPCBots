@@ -136,6 +136,9 @@ public:
     static void OnBotOwnerEnterVehicle(Player const* passenger, Vehicle const* vehicle);
     static void OnBotOwnerExitVehicle(Player const* passenger, Vehicle const* vehicle);
     static void OnBotPartyEngage(Player const* owner);
+    // /invite <bot name>: hires the bot and adds it to the group, returns false if there is no such bot
+    static bool InviteBotByName(Player* player, std::string const& name);
+    static bool HireInvitedBot(Player* player, Creature* bot);
     static void OnBotAttackStop(Creature const* bot, Unit const* target);
     //mod hooks
     static void ApplyBotEffectMods(Unit const* caster, SpellInfo const* spellInfo, uint8 effIndex, float& value);
@@ -202,7 +205,7 @@ public:
     void UnbindBot(ObjectGuid guid);
     [[nodiscard]] BotAddResult RebindBot(Creature* bot);
     [[nodiscard]] BotAddResult AddDungeonBot(Creature* bot);
-    [[nodiscard]] BotAddResult AddBot(Creature* bot);
+    [[nodiscard]] BotAddResult AddBot(Creature* bot, bool chargeHireCost = true);
     bool AddBotToGroup(Creature* bot);
     void RemoveBotFromBGQueue(Creature const* bot);
     bool RemoveBotFromGroup(Creature* bot);

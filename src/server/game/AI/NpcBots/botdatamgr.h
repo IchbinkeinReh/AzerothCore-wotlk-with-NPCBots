@@ -2,6 +2,7 @@
 #define BOTDATAMGR_H
 
 #include "botcommon.h"
+#include "Common.h"
 #include "DatabaseEnvFwd.h"
 #include "DBCEnums.h"
 
@@ -20,6 +21,7 @@ class Map;
 class Player;
 class WanderNode;
 class WorldLocation;
+class WorldPacket;
 
 struct EquipmentInfo;
 struct CreatureTemplate;
@@ -28,6 +30,24 @@ struct GroupQueueInfo;
 struct ItemTemplate;
 struct Position;
 struct PvPDifficultyEntry;
+
+// /who list filters sent by the client
+struct BotWhoListQuery
+{
+    uint32 levelMin;
+    uint32 levelMax;
+    uint32 raceMask;
+    uint32 classMask;
+    std::vector<uint32> zoneIds;
+    std::wstring name;
+    std::wstring guild;
+    std::vector<std::wstring> strings;
+    TeamId team;
+    bool allTeams;
+    LocaleConstant locale;
+    LocaleConstant dbcLocale;
+    uint32 maxResults;
+};
 
 enum LocaleConstant : uint8;
 
@@ -232,6 +252,9 @@ public:
     static Creature const* FindBot(uint32 entry);
     static Creature const* FindBot(std::string_view name, LocaleConstant loc, std::vector<uint32> const* not_ids = nullptr);
     static NpcBotRegistry const& GetExistingNPCBots();
+    // appends bots matching the query to a SMSG_WHO packet, safe to call from map threads
+    static void AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& data, uint32& matchCount,
+        uint32& displayCount);
     static void GetNPCBotGuidsByOwner(std::vector<ObjectGuid> &guids_vec, ObjectGuid owner_guid, bool count_shared = false);
     static ObjectGuid GetNPCBotGuid(uint32 entry);
     static std::vector<uint32> GetExistingNPCBotIds();
@@ -240,6 +263,7 @@ public:
 
     static void DespawnDungeonBot(uint32 entry);
     static void DespawnWandererBot(uint32 entry);
+    static void DespawnGeneratedBot(uint32 entry);
     static void LoadWanderMap(bool reload = false, bool force_all_maps = false);
     static void GenerateWanderingBots();
     static void GenerateDungeonBots(Player const* leader, Group const* group, Map const* map);
