@@ -809,6 +809,10 @@ void WorldSession::HandleTextEmoteOpcode(WorldPacket& recvData)
     //Send scripted event call
     if (unit && unit->IsCreature() && ((Creature*)unit)->AI())
         ((Creature*)unit)->AI()->ReceiveEmote(GetPlayer(), text_emote);
+
+    //npcbot: nearby bots react
+    BotChatter::OnPlayerTextEmote(GetPlayer(), text_emote, unit);
+    //end npcbot
 }
 
 void WorldSession::HandleChatIgnoredOpcode(WorldPacket& recvData)

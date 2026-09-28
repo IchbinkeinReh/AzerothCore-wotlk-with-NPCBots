@@ -211,7 +211,8 @@ namespace
     constexpr time_t CHATTER_AI_HISTORY_EXPIRE = 15 * MINUTE;
     constexpr std::size_t CHATTER_AI_MAX_TEXT_LENGTH = 240;
 
-    // world thread only
+    // world and map threads (emotes)
+    std::mutex AIPlayerCooldownsLock;
     std::unordered_map<ObjectGuid, time_t> AIPlayerCooldowns;
 
     // emotes an OpenAI answer may contain, as typed by players
@@ -255,6 +256,77 @@ namespace
         if (itr == ChatterEmotes.end() || !sEmotesTextStore.LookupEntry(itr->textEmote))
             return 0;
         return itr->textEmote;
+    }
+
+    std::string_view GetChatterEmoteName(uint32 textEmote)
+    {
+        auto itr = std::ranges::find(ChatterEmotes, textEmote, &ChatterEmote::textEmote);
+        return itr != ChatterEmotes.end() ? itr->name : std::string_view{};
+    }
+
+    // emotes the bots handle as commands when aimed at them, see bot_ai::ReceiveEmote()
+    bool IsBotCommandEmote(uint32 textEmote)
+    {
+        switch (textEmote)
+        {
+            case TEXT_EMOTE_BONK:
+            case TEXT_EMOTE_SALUTE:
+            case TEXT_EMOTE_STAND:
+            case TEXT_EMOTE_WAVE:
+            case TEXT_EMOTE_TICKLE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    // fitting answer to a player's emote without OpenAI, 0 for none
+    uint32 SelectEmoteReaction(uint32 textEmote, bool atMe)
+    {
+        std::vector<uint32> reactions;
+        switch (textEmote)
+        {
+            case TEXT_EMOTE_WAVE:
+            case TEXT_EMOTE_HELLO:      reactions = { TEXT_EMOTE_WAVE, TEXT_EMOTE_HELLO };          break;
+            case TEXT_EMOTE_GREET:
+            case TEXT_EMOTE_BOW:        reactions = { TEXT_EMOTE_BOW, TEXT_EMOTE_GREET };           break;
+            case TEXT_EMOTE_BYE:        reactions = { TEXT_EMOTE_BYE, TEXT_EMOTE_WAVE };            break;
+            case TEXT_EMOTE_CHEER:
+            case TEXT_EMOTE_VICTORY:    reactions = { TEXT_EMOTE_CHEER, TEXT_EMOTE_APPLAUD };       break;
+            case TEXT_EMOTE_DANCE:
+            case TEXT_EMOTE_FLEX:       reactions = { TEXT_EMOTE_APPLAUD, TEXT_EMOTE_LAUGH };       break;
+            case TEXT_EMOTE_LAUGH:
+            case TEXT_EMOTE_ROFL:
+            case TEXT_EMOTE_CHUCKLE:
+            case TEXT_EMOTE_GIGGLE:     reactions = { TEXT_EMOTE_LAUGH, TEXT_EMOTE_GIGGLE };        break;
+            case TEXT_EMOTE_KISS:
+            case TEXT_EMOTE_LOVE:
+            case TEXT_EMOTE_FLIRT:      reactions = { TEXT_EMOTE_BLUSH, TEXT_EMOTE_GIGGLE };        break;
+            case TEXT_EMOTE_HUG:        reactions = { TEXT_EMOTE_HUG, TEXT_EMOTE_SMILE };           break;
+            case TEXT_EMOTE_THANK:
+            case TEXT_EMOTE_APPLAUD:
+            case TEXT_EMOTE_CONGRATULATE: reactions = { TEXT_EMOTE_BOW, TEXT_EMOTE_SMILE };         break;
+            case TEXT_EMOTE_SALUTE:     reactions = { TEXT_EMOTE_SALUTE };                          break;
+            case TEXT_EMOTE_CRY:
+            case TEXT_EMOTE_SIGH:       reactions = { TEXT_EMOTE_HUG, TEXT_EMOTE_SIGH };            break;
+            case TEXT_EMOTE_RUDE:
+            case TEXT_EMOTE_CHICKEN:    reactions = { TEXT_EMOTE_RUDE, TEXT_EMOTE_ANGRY };          break;
+            case TEXT_EMOTE_THREATEN:
+            case TEXT_EMOTE_ROAR:
+            case TEXT_EMOTE_ANGRY:      reactions = { TEXT_EMOTE_ROAR, TEXT_EMOTE_COWER };          break;
+            case TEXT_EMOTE_POINT:
+            case TEXT_EMOTE_CONFUSED:   reactions = { TEXT_EMOTE_SHRUG, TEXT_EMOTE_CONFUSED };      break;
+            case TEXT_EMOTE_SMILE:
+            case TEXT_EMOTE_GRIN:
+            case TEXT_EMOTE_WINK:       reactions = { TEXT_EMOTE_SMILE, TEXT_EMOTE_WINK };          break;
+            default:
+                if (atMe)
+                    reactions = { TEXT_EMOTE_SHRUG, TEXT_EMOTE_CONFUSED, TEXT_EMOTE_SMILE };
+                break;
+        }
+
+        std::erase_if(reactions, [](uint32 id) { return !sEmotesTextStore.LookupEntry(id); });
+        return reactions.empty() ? 0 : Acore::Containers::SelectRandomContainerElement(reactions);
     }
 
     // SMSG_TEXT_EMOTE, the client builds the localized emote text itself
@@ -410,7 +482,8 @@ namespace
 
 BotChatter::BotChatter(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot),
     _greetTimer(urand(2000, 5000)), _idleTimer(urand(30000, 90000)),
-    _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0), _aiPendingUntil(0)
+    _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0), _aiPendingUntil(0),
+    _emoteReaction(0), _emoteTimer(0)
 {
 }
 
@@ -445,6 +518,19 @@ void BotChatter::TextBuilder::operator()(WorldPacket& data, LocaleConstant local
 
 void BotChatter::Update(uint32 diff)
 {
+    if (_emoteTimer)
+    {
+        if (_emoteTimer <= diff)
+        {
+            _emoteTimer = 0;
+            if (CanChat(false, true))
+                PerformEmote(_emoteReaction, ObjectAccessor::GetPlayer(*_me, _emoteTarget));
+            _emoteTarget.Clear();
+        }
+        else
+            _emoteTimer -= diff;
+    }
+
     if (_replyTimer)
     {
         if (_replyTimer <= diff)
@@ -653,6 +739,77 @@ void BotChatter::ReplyToWhisper(Player* player, std::string_view message)
         WhisperTo(text, player);
 }
 
+void BotChatter::OnPlayerTextEmote(Player* player, uint32 textEmote, Unit const* target)
+{
+    if (!BotCfg::IsBotChatterEnabled() || !player->IsInWorld())
+        return;
+
+    Creature const* targetBot = (target && target->IsNPCBot()) ? target->ToCreature() : nullptr;
+    // commands for the bot, see bot_ai::ReceiveEmote()
+    if (targetBot && IsBotCommandEmote(textEmote))
+        return;
+
+    float range = sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_TEXTEMOTE);
+    std::list<Creature*> found;
+    NearbyBotCheck check(player, range);
+    Acore::CreatureListSearcher<NearbyBotCheck> searcher(player, found, check);
+    Cell::VisitObjects(player, searcher, range);
+
+    // the bot the emote is aimed at, otherwise one of the player's own bots or with a chance a random one
+    BotChatter* responder = nullptr;
+    std::vector<BotChatter*> own;
+    std::vector<BotChatter*> others;
+    for (Creature* bot : found)
+    {
+        bot_ai* ai = bot->GetBotAI();
+        if (!ai)
+            continue;
+
+        BotChatter& chatter = ai->GetChatter();
+        bool atMe = bot == targetBot;
+        if (chatter._emoteTimer || !chatter.CanReplyTo(player, atMe))
+            continue;
+
+        if (atMe)
+        {
+            responder = &chatter;
+            break;
+        }
+        (chatter.IsOwnedBy(player) ? own : others).push_back(&chatter);
+    }
+
+    if (targetBot && !responder)
+        return;
+
+    if (!responder && !own.empty())
+        responder = Acore::Containers::SelectRandomContainerElement(own);
+    if (!responder && !others.empty() && roll_chance_i(BotCfg::GetBotChatterReplyChance()))
+        responder = Acore::Containers::SelectRandomContainerElement(others);
+
+    if (responder)
+        responder->ReactToEmote(player, textEmote, targetBot != nullptr);
+}
+
+void BotChatter::ReactToEmote(Player* player, uint32 textEmote, bool atMe)
+{
+    // OpenAI gets the emote as a message and may answer with words, an emote or both
+    if (BotOpenAI::IsEnabled())
+    {
+        std::string_view name = GetChatterEmoteName(textEmote);
+        std::string action = "*" + player->GetName() + (name.empty() ? " does an emote" : " /" + std::string(name)) +
+            (atMe ? " at you*" : "*");
+        if (RequestAIReply(player, action, BOT_CHATTER_REPLY_SAY))
+            return;
+    }
+
+    if (uint32 reaction = SelectEmoteReaction(textEmote, atMe))
+    {
+        _emoteReaction = reaction;
+        _emoteTarget = player->GetGUID();
+        _emoteTimer = urand(800, 2000);
+    }
+}
+
 void BotChatter::HandlePlayerMessage(Player const* player, std::string_view message, BotChatterReplyMode mode,
     std::vector<Creature*> const& bots)
 {
@@ -752,9 +909,12 @@ bool BotChatter::RequestAIReply(Player const* player, std::string_view message, 
     time_t now = GameTime::GetGameTime().count();
 
     // per player cooldown, against spam and cost
-    auto cooldown = AIPlayerCooldowns.find(player->GetGUID());
-    if (cooldown != AIPlayerCooldowns.end() && cooldown->second > now)
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(AIPlayerCooldownsLock);
+        auto cooldown = AIPlayerCooldowns.find(player->GetGUID());
+        if (cooldown != AIPlayerCooldowns.end() && cooldown->second > now)
+            return false;
+    }
 
     std::erase_if(_aiHistory, [now](auto const& history) {
         return history.second.lastUse + CHATTER_AI_HISTORY_EXPIRE <= now;
@@ -793,8 +953,11 @@ bool BotChatter::RequestAIReply(Player const* player, std::string_view message, 
     if (!BotOpenAI::Enqueue(std::move(request)))
         return false;
 
-    std::erase_if(AIPlayerCooldowns, [now](auto const& entry) { return entry.second <= now; });
-    AIPlayerCooldowns[player->GetGUID()] = now + BotCfg::GetBotOpenAIPlayerCooldown();
+    {
+        std::lock_guard<std::mutex> lock(AIPlayerCooldownsLock);
+        std::erase_if(AIPlayerCooldowns, [now](auto const& entry) { return entry.second <= now; });
+        AIPlayerCooldowns[player->GetGUID()] = now + BotCfg::GetBotOpenAIPlayerCooldown();
+    }
 
     history.lastUse = now;
     history.messages.push_back({ false, std::string(message) });

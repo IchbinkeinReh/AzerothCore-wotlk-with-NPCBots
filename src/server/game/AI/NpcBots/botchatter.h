@@ -81,6 +81,8 @@ public:
     static bool OnPlayerWhisper(Player* player, std::string const& botName, std::string_view message);
     // delivers the OpenAI answers, called from the world thread
     static void ProcessAIReplies();
+    // a player's /emote, called from the player's map thread
+    static void OnPlayerTextEmote(Player* player, uint32 textEmote, Unit const* target);
 
     // a text id variant (localized for each listener) or a raw text
     struct ChatterText
@@ -136,6 +138,7 @@ private:
     bool SayToZoneChannel(ChatterText const& text, WorldObject const* subject, bool ignoreCooldown);
     bool WhisperTo(ChatterText const& text, Player* player);
     void PerformEmote(uint32 textEmote, Player* target);
+    void ReactToEmote(Player* player, uint32 textEmote, bool atMe);
 
     std::string FormatText(uint32 textId, uint8 slot, LocaleConstant locale, WorldObject const* subject) const;
     std::string GetDefaultText(ChatterText const& text, WorldObject const* subject) const;
@@ -163,6 +166,11 @@ private:
     std::unordered_map<ObjectGuid, AIHistory> _aiHistory;
     // waiting for an answer until then
     time_t _aiPendingUntil;
+
+    // emote answering a player's emote
+    uint32 _emoteReaction;
+    ObjectGuid _emoteTarget;
+    uint32 _emoteTimer;
 
     bool IsAIPending() const;
 };
