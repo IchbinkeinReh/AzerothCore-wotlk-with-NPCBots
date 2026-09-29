@@ -1091,7 +1091,7 @@ void bot_ai::SetBotCommandState(uint32 st, bool force, Position* newpos, float* 
     if (mover)
     {
         if ((st & BOT_COMMAND_FOLLOW) && !IsChanneling() &&
-            (force || (!mover->isMoving() && !IsCasting() && master->IsAlive() && !Feasting())))
+            (force || (!mover->isMoving() && !IsCasting() && master->IsAlive() && !Feasting() && !IsTalking())))
         {
             if (!me->IsInMap(master)) return;
             if (CCed(mover, true)/* || master->HasUnitState(UNIT_STATE_FLEEING)*/) return;
@@ -18532,6 +18532,9 @@ void bot_ai::CommonTimers(uint32 diff)
 
     if (_potionTimer > diff && (_potionTimer < POTION_CD || !me->IsInCombat())) _potionTimer -= diff;
 
+    if (_talkTimer > diff)          _talkTimer -= diff;
+    else                            _talkTimer = 0;
+
     if (IAmFree())
         UpdateReviveTimer(diff);
     else
@@ -18738,6 +18741,16 @@ void bot_ai::Evade()
                     //if (TempSummon* wpc = me->GetMap()->SummonCreature(VISUAL_WAYPOINT, pos, nullptr, 20000))
                     //    wpc->SetTempSummonType(TEMPSUMMON_TIMED_DESPAWN);
 
+                    // not a straight line: a detour point beside the way, a few per node, not counted as evade attempt
+                    Position varied;
+                    if (IsWanderer() && use_path && _wanderVariations < 8 && me->GetMap()->GetEntry()->IsContinent() &&
+                        !me->IsInWater() && GetVariedWanderPoint(pos, varied))
+                    {
+                        pos.Relocate(varied);
+                        ++_wanderVariations;
+                        --_evadeCount;
+                    }
+
                     movepos.Relocate(me);
                     BotMovement(BOT_MOVE_POINT, &pos, nullptr, use_path);
                 }
@@ -18804,6 +18817,7 @@ void bot_ai::Evade()
                 _travel_node_last = _travel_node_cur;
                 _travel_node_cur = nextNode;
                 _evadeCount = 0;
+                _wanderVariations = 0;
                 return;
             }
 
@@ -18824,6 +18838,57 @@ void bot_ai::Evade()
     me->SetFacingTo(pos.GetOrientation());
     me->SetFaction(me->GetCreatureTemplate()->faction);
 }
+// a point beside the straight way to target, reachable on the navmesh without a long detour (no walking through walls)
+bool bot_ai::GetVariedWanderPoint(Position const& target, Position& point) const
+{
+    float dist = me->GetExactDist2d(target);
+    if (dist < 30.0f)
+        return false;
+
+    float along = dist * frand(0.35f, 0.65f);
+    float lateral = frand(-1.0f, 1.0f) * std::min(15.0f, dist * 0.2f);
+    if (std::fabs(lateral) < 3.0f)
+        return false;
+
+    float angle = me->GetAbsoluteAngle(&target);
+    float x = me->GetPositionX() + along * std::cos(angle) + lateral * std::cos(angle + float(M_PI_2));
+    float y = me->GetPositionY() + along * std::sin(angle) + lateral * std::sin(angle + float(M_PI_2));
+    Bcore::NormalizeMapCoord(x);
+    Bcore::NormalizeMapCoord(y);
+
+    float z = me->GetPositionZ();
+    me->UpdateGroundPositionZ(x, y, z);
+    if (z <= INVALID_HEIGHT || std::fabs(z - me->GetPositionZ()) > along * 0.5f)
+        return false;
+
+    PathGenerator path(me);
+    path.CalculatePath(x, y, z);
+    if (path.GetPathType() != PATHFIND_NORMAL)
+        return false;
+
+    Movement::PointsArray const& points = path.GetPath();
+    float length = 0.0f;
+    for (std::size_t i = 1; i < points.size(); ++i)
+        length += (points[i] - points[i - 1]).length();
+
+    if (length > me->GetExactDist(x, y, z) * 1.3f + 5.0f)
+        return false;
+
+    point.Relocate(x, y, z);
+    return true;
+}
+
+void bot_ai::PauseForTalking(uint32 duration)
+{
+    if (!me->IsAlive() || me->IsInCombat())
+        return;
+
+    _talkTimer = std::max(_talkTimer, duration);
+    evadeDelayTimer = std::max(evadeDelayTimer, duration);
+    if (me->isMoving() && !JumpingOrFalling())
+        me->BotStopMovement();
+}
+
 void bot_ai::GetNextEvadeMovePoint(Position& pos, bool& use_path) const
 {
     //const uint8 evade_jump_threshold = me->HasUnitMovementFlag(MOVEMENTFLAG_SWIMMING) ? 50 : 25;

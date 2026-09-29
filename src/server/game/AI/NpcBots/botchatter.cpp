@@ -1248,6 +1248,7 @@ bool BotChatter::SayNearby(ChatterText const& text, WorldObject const* subject, 
     Acore::LocalizedPacketDo<TextBuilder> localizer(builder);
     Acore::PlayerDistWorker<Acore::LocalizedPacketDo<TextBuilder>> worker(_me, range, localizer);
     Cell::VisitObjects(_me, worker, range);
+    PauseToType(text, subject);
     return true;
 }
 
@@ -1270,6 +1271,7 @@ bool BotChatter::SayToGroup(ChatterText const& text, WorldObject const* subject,
     }
 
     LogChatLine(GroupChatLogKey(group), _me->GetName(), GetDefaultText(text, subject));
+    PauseToType(text, subject);
     return true;
 }
 
@@ -1338,6 +1340,7 @@ bool BotChatter::SayToZoneChannel(ChatterText const& text, WorldObject const* su
     for (TeamId team : teams)
         LogChatLine(ChannelChatLogKey(zoneId, team), _me->GetName(), defaultText);
 
+    PauseToType(text, subject);
     return true;
 }
 
@@ -1381,7 +1384,14 @@ bool BotChatter::WhisperTo(ChatterText const& text, Player* player)
     TextBuilder builder(*this, CHAT_MSG_WHISPER, text, player);
     builder(data, player->GetSession()->GetSessionDbLocaleIndex());
     player->SendDirectMessage(&data);
+    PauseToType(text, player);
     return true;
+}
+
+void BotChatter::PauseToType(ChatterText const& text, WorldObject const* subject)
+{
+    std::size_t length = GetDefaultText(text, subject).size();
+    _ai->PauseForTalking(std::clamp<uint32>(uint32(400 + 25 * length), 800, 3000));
 }
 
 std::string BotChatter::GetDefaultText(ChatterText const& text, WorldObject const* subject) const

@@ -124,6 +124,7 @@ public:
 
     void Evade();
     void GetNextEvadeMovePoint(Position& pos, bool& use_path) const;
+    bool GetVariedWanderPoint(Position const& target, Position& point) const;
 
     EventProcessor* GetEvents() { return &Events; }
     BotChatter& GetChatter() { return _chatter; }
@@ -197,6 +198,9 @@ public:
     bool IsWanderer() const { return _wanderer; }
     void SetWanderer();
     void ClearWanderer();
+    // stand still for a moment while "typing" a chat message
+    void PauseForTalking(uint32 duration);
+    bool IsTalking() const { return _talkTimer > 0; }
     // generated at runtime (wanderers, hired wanderers): no spawn to return to, not saved
     bool IsGeneratedBot() const;
     static bool IsWanderNodeAvailableForBotFaction(WanderNode const* wp, uint32 factionTemplateId, bool teleport, bool spawn = false);
@@ -726,6 +730,9 @@ private:
     uint32 waitTimer{};
     uint32 itemsAutouseTimer{};
     uint32 evadeDelayTimer{};
+    uint32 _talkTimer{};
+    // detours of a wanderer on the way to its current node
+    uint8 _wanderVariations{};
     uint32 indoorsTimer{};
     uint32 outdoorsTimer{};
     uint32 _nonCombatActionsTimer{};

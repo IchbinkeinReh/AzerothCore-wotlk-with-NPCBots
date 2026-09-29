@@ -138,6 +138,8 @@ private:
     bool SayToZoneChannel(ChatterText const& text, WorldObject const* subject, bool ignoreCooldown);
     bool WhisperTo(ChatterText const& text, Player* player);
     void PerformEmote(uint32 textEmote, Player* target);
+    // stand still for about as long as typing the message would take
+    void PauseToType(ChatterText const& text, WorldObject const* subject);
     void ReactToEmote(Player* player, uint32 textEmote, bool atMe);
 
     std::string FormatText(uint32 textId, uint8 slot, LocaleConstant locale, WorldObject const* subject) const;
