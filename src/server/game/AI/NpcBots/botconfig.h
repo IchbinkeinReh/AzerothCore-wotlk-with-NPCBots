@@ -109,6 +109,7 @@ public:
     static bool EnableWandererFreeLootSkinning();
     static bool SpawnWanderingBotsNearPlayers();
     static uint32 GetMaxWanderingBotsPerGrid();
+    static uint32 GetBotWandererDespawnDelay();
     static bool IsBotGuildsEnabled();
     static bool IsBotOpenAIEnabled();
     static std::string const& GetBotOpenAIApiKey();

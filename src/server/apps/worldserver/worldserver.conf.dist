@@ -5523,6 +5523,16 @@ NpcBot.WanderingBots.Continents.SpawnNearPlayers = 1
 NpcBot.WanderingBots.Continents.MaxPerGrid = 100
 
 #
+#    NpcBot.WanderingBots.Continents.DespawnDelay
+#        Description: With NpcBot.WanderingBots.Continents.SpawnNearPlayers enabled, a wandering bot
+#                     that had no player in or next to its map grid for this many seconds (players left
+#                     the area or logged out) leaves the world and waits to spawn near players again.
+#        Default:     300 - (5 minutes)
+#                     0   - (Disabled, wandering bots stay in the world)
+
+NpcBot.WanderingBots.Continents.DespawnDelay = 300
+
+#
 #    NpcBot.Guilds.Enable
 #    NpcBot.Guilds.Chance
 #        Description: Give bots a guild name, like players have. Each bot gets a random but stable

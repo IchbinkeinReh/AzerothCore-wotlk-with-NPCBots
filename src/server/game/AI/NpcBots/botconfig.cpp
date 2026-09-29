@@ -143,6 +143,7 @@ static bool _untarget_wnpc_flightmaster;
 static bool _wanderingFreeLootSkinning;
 static bool _wanderingSpawnNearPlayers;
 static uint32 _wanderingMaxPerGrid;
+static uint32 _wanderingDespawnDelay;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
@@ -487,6 +488,7 @@ private:
         _wanderingFreeLootSkinning      = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.FreeLoot.Skinning", false);
         _wanderingSpawnNearPlayers      = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Continents.SpawnNearPlayers", true);
         _wanderingMaxPerGrid            = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Continents.MaxPerGrid", 100);
+        _wanderingDespawnDelay          = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Continents.DespawnDelay", 300);
         _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
         _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
         _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
@@ -1327,6 +1329,10 @@ bool BotCfg::SpawnWanderingBotsNearPlayers()
 uint32 BotCfg::GetMaxWanderingBotsPerGrid()
 {
     return _wanderingMaxPerGrid;
+}
+uint32 BotCfg::GetBotWandererDespawnDelay()
+{
+    return _wanderingDespawnDelay;
 }
 bool BotCfg::IsBotOpenAIEnabled()
 {
