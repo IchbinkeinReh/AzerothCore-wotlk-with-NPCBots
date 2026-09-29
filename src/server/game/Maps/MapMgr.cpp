@@ -35,6 +35,7 @@
 #include "Transport.h"
 #include "World.h"
 #include "WorldPacket.h"
+#include "WorldSessionMgr.h"
 
 //npcbot
 #include "botdatamgr.h"
@@ -264,6 +265,12 @@ void MapMgr::Update(uint32 diff)
         i_timer[i].Update(diff);
 
     //npcbot
+    // throttle full map updates to once per second while no player is logged in
+    // sessions are still updated every tick, so logins are processed without delay
+    time_t const mapUpdateInterval = sWorldSessionMgr->GetPlayerCount() ? time_t(sWorld->getIntConfig(CONFIG_INTERVAL_MAPUPDATE)) : 1000;
+    if (i_timer[3].GetInterval() != mapUpdateInterval)
+        i_timer[3].SetInterval(mapUpdateInterval);
+
     BotDataMgr::Update(diff);
     //end npcbot
 
