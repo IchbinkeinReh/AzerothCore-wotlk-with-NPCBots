@@ -152,6 +152,7 @@ static uint32 _activitiesRoleplayChance;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
+static std::string _chatterLocale;
 static std::string _openaiModel;
 static std::string _openaiEndpoint;
 static std::string _openaiReasoningEffort;
@@ -540,6 +541,7 @@ private:
         _chatterGreetCooldown           = sConfigMgr->GetIntDefault("NpcBot.Chatter.Greet.Cooldown", 900);
         _chatterReplyChance             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Reply.Chance", 50);
         _chatterEventChance             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Event.Chance", 25);
+        _chatterLocale                  = sConfigMgr->GetStringDefault("NpcBot.Chatter.Locale", "");
 
         if (reload)
             BotLogger::Log(NPCBOT_LOG_CONFIG_RELOAD, uint32(0));
@@ -1367,6 +1369,10 @@ uint32 BotCfg::GetBotActivitiesRestChance()
 uint32 BotCfg::GetBotActivitiesRoleplayChance()
 {
     return _activitiesRoleplayChance;
+}
+std::string const& BotCfg::GetBotChatterLocale()
+{
+    return _chatterLocale;
 }
 bool BotCfg::IsBotOpenAIEnabled()
 {

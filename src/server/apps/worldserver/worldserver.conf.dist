@@ -5833,6 +5833,15 @@ NpcBot.Chatter.Reply.Chance = 50
 NpcBot.Chatter.Event.Chance = 25
 
 #
+#    NpcBot.Chatter.Locale
+#        Description: Language bots talk in: built-in texts, campfire stories and OpenAI answers, whatever
+#                     language the client or the player's message has (emote texts are built by the client).
+#        Example:     "deDE", "enUS", "frFR", "esES", "esMX", "ruRU", "koKR", "zhCN", "zhTW"
+#        Default:     "" - (the server language, the DBC locale)
+
+NpcBot.Chatter.Locale = ""
+
+#
 #    NpcBot.Chatter.OpenAI.Enable
 #        Description: Generate the answers of bots to players through the OpenAI Responses API.
 #                     Bots answer any message they hear (/say, party/raid, General, whispers), not only

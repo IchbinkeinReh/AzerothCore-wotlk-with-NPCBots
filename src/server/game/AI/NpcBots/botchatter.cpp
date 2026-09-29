@@ -447,6 +447,32 @@ namespace
         return result;
     }
 
+    // bots always talk in the server language (NpcBot.Chatter.Locale, by default the DBC locale)
+    LocaleConstant GetChatterLocale()
+    {
+        std::string const& configured = BotCfg::GetBotChatterLocale();
+        for (uint8 i = 0; i < TOTAL_LOCALES && !configured.empty(); ++i)
+            if (configured == localeNames[i])
+                return LocaleConstant(i);
+        return sWorld->GetDefaultDbcLocale();
+    }
+
+    char const* GetLanguageName(LocaleConstant locale)
+    {
+        switch (locale)
+        {
+            case LOCALE_koKR: return "Korean";
+            case LOCALE_frFR: return "French";
+            case LOCALE_deDE: return "German";
+            case LOCALE_zhCN: return "Simplified Chinese";
+            case LOCALE_zhTW: return "Traditional Chinese";
+            case LOCALE_esES: return "Spanish";
+            case LOCALE_esMX: return "Latin American Spanish";
+            case LOCALE_ruRU: return "Russian";
+            default:          return "English";
+        }
+    }
+
     std::string GetEnglishClassName(uint8 botClass)
     {
         uint32 textId = GetClassTextId(botClass);
@@ -1159,7 +1185,8 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
     }
 
     ss << "Stay in character as an inhabitant of this world. Answer with a single short chat line of at most "
-        << CHATTER_AI_MAX_TEXT_LENGTH / 2 << " characters, in the language of the last message, "
+        << CHATTER_AI_MAX_TEXT_LENGTH / 2 << " characters, always in " << GetLanguageName(GetChatterLocale())
+        << " even if the player writes in another language, "
         << "without markdown, emojis, quotes or your own name in front. Never mention being an AI or a bot.";
 
     if (BotCfg::IsBotOpenAIEmotesEnabled())
@@ -1555,16 +1582,18 @@ void BotChatter::PauseToType(ChatterText const& text, WorldObject const* subject
 
 std::string BotChatter::GetDefaultText(ChatterText const& text, WorldObject const* subject) const
 {
-    return text.textId ? FormatText(text.textId, text.slot, DEFAULT_LOCALE, subject) : text.raw;
+    return text.textId ? FormatText(text.textId, text.slot, GetChatterLocale(), subject) : text.raw;
 }
 
+// texts in the server language, names localized for the listener
 std::string BotChatter::FormatText(uint32 textId, uint8 slot, LocaleConstant locale, WorldObject const* subject) const
 {
-    std::string text = GetTextVariant(textId, slot, locale);
+    LocaleConstant textLocale = GetChatterLocale();
+    std::string text = GetTextVariant(textId, slot, textLocale);
     if (text.find('%') == std::string::npos)
         return text;
 
-    LocaleConstant dbcLocale = sWorld->GetAvailableDbcLocale(locale);
+    LocaleConstant dbcLocale = sWorld->GetAvailableDbcLocale(textLocale);
 
     if (subject)
     {
@@ -1579,7 +1608,7 @@ std::string BotChatter::FormatText(uint32 textId, uint8 slot, LocaleConstant loc
     if (text.find("%class") != std::string::npos)
     {
         uint32 classTextId = GetClassTextId(_ai->GetBotClass());
-        ReplaceAll(text, "%class", classTextId ? GetTextVariant(classTextId, 0, locale) : "");
+        ReplaceAll(text, "%class", classTextId ? GetTextVariant(classTextId, 0, textLocale) : "");
     }
 
     if (text.find("%race") != std::string::npos)
@@ -1592,7 +1621,7 @@ std::string BotChatter::FormatText(uint32 textId, uint8 slot, LocaleConstant loc
     {
         AreaTableEntry const* zone = sAreaTableStore.LookupEntry(_me->GetZoneId());
         ReplaceAll(text, "%zone", (zone && *zone->area_name[dbcLocale]) ? zone->area_name[dbcLocale] :
-            GetTextVariant(BOT_TEXT_CHATTER_UNKNOWN_AREA, 0, locale));
+            GetTextVariant(BOT_TEXT_CHATTER_UNKNOWN_AREA, 0, textLocale));
     }
 
     return text;

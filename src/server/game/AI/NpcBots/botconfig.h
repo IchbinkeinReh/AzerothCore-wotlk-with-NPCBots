@@ -116,6 +116,7 @@ public:
     static uint32 GetBotActivitiesRestChance();
     static uint32 GetBotActivitiesRoleplayChance();
     static bool IsBotGuildsEnabled();
+    static std::string const& GetBotChatterLocale();
     static bool IsBotOpenAIEnabled();
     static std::string const& GetBotOpenAIApiKey();
     static std::string const& GetBotOpenAIModel();
