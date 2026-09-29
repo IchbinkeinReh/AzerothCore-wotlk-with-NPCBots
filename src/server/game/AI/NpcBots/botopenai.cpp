@@ -95,6 +95,11 @@ namespace
         return !out.host.empty();
     }
 
+    bool IsStructured(BotAIRequest const& request)
+    {
+        return !request.emotes.empty() || request.allowActivity || request.storyStep;
+    }
+
     std::string BuildRequestBody(Job const& job)
     {
         json::array input;
@@ -113,25 +118,53 @@ namespace
         if (!job.reasoningEffort.empty())
             body["reasoning"] = json::object{ { "effort", job.reasoningEffort } };
 
-        // structured answer: chat line plus an optional emote
-        if (!job.request.emotes.empty())
+        // structured answer: chat line plus optional emote, activity change and story end
+        if (IsStructured(job.request))
         {
-            json::array emotes;
-            emotes.push_back("none");
-            for (std::string const& emote : job.request.emotes)
-                emotes.push_back(json::string(emote));
+            json::object properties;
+            json::array required;
+
+            properties["message"] = json::object{
+                { "type", "string" },
+                { "description", "Chat line, empty if the emote says it all" } };
+            required.push_back("message");
+
+            if (!job.request.emotes.empty())
+            {
+                json::array emotes;
+                emotes.push_back("none");
+                for (std::string const& emote : job.request.emotes)
+                    emotes.push_back(json::string(emote));
+
+                properties["emote"] = json::object{
+                    { "type", "string" },
+                    { "description", "Emote performed with the message, none for no emote" },
+                    { "enum", std::move(emotes) } };
+                required.push_back("emote");
+            }
+
+            if (job.request.allowActivity)
+            {
+                properties["activity"] = json::object{
+                    { "type", "string" },
+                    { "description", "keep: go on as before, active: get up and go on, rest: sit down and rest, "
+                        "story: sit down at a campfire and tell the player a story" },
+                    { "enum", json::array{ "keep", "active", "rest", "story" } } };
+                required.push_back("activity");
+            }
+
+            if (job.request.storyStep)
+            {
+                properties["story_end"] = json::object{
+                    { "type", "boolean" },
+                    { "description", "True for the last sentence of the story, with the goodbye" } };
+                required.push_back("story_end");
+            }
 
             json::object schema{
                 { "type", "object" },
-                { "properties", json::object{
-                    { "message", json::object{
-                        { "type", "string" },
-                        { "description", "Chat line, empty if the emote says it all" } } },
-                    { "emote", json::object{
-                        { "type", "string" },
-                        { "description", "Emote performed with the message, none for no emote" },
-                        { "enum", std::move(emotes) } } } } },
-                { "required", json::array{ "message", "emote" } },
+                { "properties", std::move(properties) },
+                { "required", std::move(required) },
                 { "additionalProperties", false }
             };
 
@@ -199,21 +232,25 @@ namespace
     }
 
     // structured answer, a model ignoring the format still gets its text through
-    void ParseStructuredAnswer(std::string const& answer, std::string& message, std::string& emote)
+    void ParseStructuredAnswer(std::string const& answer, BotAIResult& result)
     {
         boost::system::error_code ec;
         json::value root = json::parse(answer, ec);
         json::object const* obj = ec ? nullptr : root.if_object();
         if (!obj)
         {
-            message = answer;
+            result.text = answer;
             return;
         }
 
         if (json::value const* value = obj->if_contains("message"); value && value->is_string())
-            message = std::string(value->get_string());
+            result.text = std::string(value->get_string());
         if (json::value const* value = obj->if_contains("emote"); value && value->is_string())
-            emote = std::string(value->get_string());
+            result.emote = std::string(value->get_string());
+        if (json::value const* value = obj->if_contains("activity"); value && value->is_string())
+            result.activity = std::string(value->get_string());
+        if (json::value const* value = obj->if_contains("story_end"); value && value->is_bool())
+            result.storyEnd = value->get_bool();
     }
 
     // one HTTPS POST, every step is bound by the timeout
@@ -289,7 +326,8 @@ namespace
 
             std::string error;
             std::string text;
-            std::string emote;
+            BotAIResult result{ job.request.botEntry, job.request.playerGuid, job.request.replyMode, {}, {}, {},
+                false };
             Url url;
             if (!ParseUrl(job.endpoint, url))
                 error = "NpcBot.Chatter.OpenAI.Endpoint must be an https:// URL";
@@ -298,12 +336,10 @@ namespace
                 std::string response = Post(url, job, BuildRequestBody(job), error);
                 if (!response.empty())
                     text = ParseResponseText(response, error);
-                if (!text.empty() && !job.request.emotes.empty())
-                {
-                    std::string answer = std::move(text);
-                    text.clear();
-                    ParseStructuredAnswer(answer, text, emote);
-                }
+                if (!text.empty() && IsStructured(job.request))
+                    ParseStructuredAnswer(text, result);
+                else
+                    result.text = std::move(text);
             }
 
             if (Stopping)
@@ -314,8 +350,7 @@ namespace
                 BOT_LOG_ERROR("npcbots", "BotOpenAI: request failed: {}", error);
 
             std::lock_guard<std::mutex> lock(QueueLock);
-            Results.push_back({ job.request.botEntry, job.request.playerGuid, job.request.replyMode, std::move(text),
-                std::move(emote) });
+            Results.push_back(std::move(result));
         }
     }
 }

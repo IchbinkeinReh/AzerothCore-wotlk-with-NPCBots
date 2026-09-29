@@ -12,6 +12,7 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "Player.h"
 
 /*
 NpcBot Activities, see botactivity.h
@@ -29,6 +30,12 @@ namespace
     constexpr uint32 STORIES_COUNT = 50;
     constexpr uint32 STORY_TEXT_FIRST = 71101;     // lines 71101+2k, reactions 71102+2k
     constexpr uint32 HOLD_POSITION_TIME = 5000;     // refreshed every update, see bot_ai::HoldPosition()
+    constexpr float STORY_MAX_PLAYER_DISTANCE = 30.0f;
+    constexpr float STORY_START_MAX_DISTANCE = 20.0f;
+    constexpr float HIRED_MAX_MASTER_DISTANCE = 20.0f;
+    constexpr float STORY_SEAT_DISTANCE = 2.2f;
+    constexpr uint32 STORY_MAX_TIME = 10 * MINUTE * IN_MILLISECONDS;
+    constexpr uint32 STORY_ANSWER_TIMEOUT = 45 * IN_MILLISECONDS;
 
     uint8 CountTextSlots(uint32 textId)
     {
@@ -80,14 +87,16 @@ namespace
 }
 
 BotActivity::BotActivity(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot), _mode(BOT_ACTIVITY_ACTIVE),
-    _decisionTimer(0), _modeTimer(0), _seated(false), _phase(ROLEPLAY_GATHER), _phaseTimer(0), _story(0),
-    _storyLine(0), _storiesLeft(0)
+    _decisionTimer(0), _modeTimer(0), _requested(false), _seated(false), _phase(ROLEPLAY_GATHER), _phaseTimer(0),
+    _story(0), _storyLine(0), _storiesLeft(0), _storyLength(0), _storyLinesTold(0), _storyWaiting(false),
+    _storyEnding(false), _storyTimer(0)
 {
 }
 
 void BotActivity::Update(uint32 diff)
 {
-    if (!BotCfg::IsBotActivitiesEnabled())
+    // activities players asked for work without the autonomous ones
+    if (!BotCfg::IsBotActivitiesEnabled() && !_requested)
     {
         if (_mode != BOT_ACTIVITY_ACTIVE)
             Stop();
@@ -96,9 +105,7 @@ void BotActivity::Update(uint32 diff)
 
     if (_mode != BOT_ACTIVITY_ACTIVE)
     {
-        // fights, being hired or leaving the world end any activity
-        if (!_me->IsInWorld() || !_me->IsAlive() || _me->IsInCombat() || !_ai->IsWanderer() || !_ai->IAmFree() ||
-            _ai->IsDuringTeleport())
+        if (!IsActivityValid())
         {
             Stop();
             return;
@@ -108,6 +115,8 @@ void BotActivity::Update(uint32 diff)
 
         if (_mode == BOT_ACTIVITY_REST)
             UpdateRest(diff);
+        else if (_mode == BOT_ACTIVITY_STORY)
+            UpdateStory(diff);
         else if (_host == _me->GetGUID())
             UpdateRoleplayHost(diff);
         else if (!UpdateRoleplayGuest())
@@ -115,7 +124,8 @@ void BotActivity::Update(uint32 diff)
         return;
     }
 
-    if (!_ai->IsWanderer())
+    // hired bots never change their activity on their own
+    if (!BotCfg::IsBotActivitiesEnabled() || !_ai->IsWanderer() || !_ai->IAmFree())
         return;
 
     if (!_decisionTimer)
@@ -166,10 +176,34 @@ bool BotActivity::IsSafeSpot() const
     return !hostile;
 }
 
+// fights, leaving the world or being hired end any activity, an activity asked for also ends when the owner of
+// a hired bot moves on
+bool BotActivity::IsActivityValid() const
+{
+    if (!_me->IsInWorld() || !_me->IsAlive() || _me->IsInCombat() || _ai->IsDuringTeleport())
+        return false;
+
+    if (!_requested)
+        return _ai->IsWanderer() && _ai->IAmFree();
+
+    if (!_ai->IAmFree())
+    {
+        Player const* master = _ai->GetBotOwner();
+        if (!master || !master->IsInWorld() || master->GetMap() != _me->GetMap() || master->IsInCombat() ||
+            !_me->IsWithinDistInMap(master, HIRED_MAX_MASTER_DISTANCE))
+            return false;
+    }
+
+    return true;
+}
+
 void BotActivity::Stop()
 {
     if (_mode == BOT_ACTIVITY_ROLEPLAY && _host == _me->GetGUID())
         EndRoleplay();
+    else if (!_campfire.IsEmpty())
+        if (GameObject* fire = ObjectAccessor::GetGameObject(*_me, _campfire))
+            fire->Delete();
 
     if (_mode != BOT_ACTIVITY_ACTIVE)
         StandUp();
@@ -177,10 +211,169 @@ void BotActivity::Stop()
     _mode = BOT_ACTIVITY_ACTIVE;
     _modeTimer = 0;
     _decisionTimer = 0;
+    _requested = false;
     _host.Clear();
     _guests.clear();
     _campfire.Clear();
     _seated = false;
+    _storyPlayer.Clear();
+    _storyTranscript.clear();
+    _storyWaiting = false;
+    _storyEnding = false;
+    _storyTimer = 0;
+}
+
+bool BotActivity::RequestRest(Player const* /*player*/)
+{
+    if (_mode == BOT_ACTIVITY_REST)
+        return true;
+    if (!_me->IsInWorld() || !_me->IsAlive() || _me->IsInCombat() || _ai->IsDuringTeleport())
+        return false;
+
+    Stop();
+    _mode = BOT_ACTIVITY_REST;
+    _requested = true;
+    _modeTimer = urand(60, 180) * IN_MILLISECONDS;
+    _ai->HoldPosition(HOLD_POSITION_TIME);
+    SitDown();
+    return true;
+}
+
+// an existing campfire nearby or a conjured one at pos
+bool BotActivity::PlaceCampfire(Position const& pos, float searchRadius)
+{
+    GameObject* fire = _me->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_SPELL_FOCUS, searchRadius);
+    if (fire && fire->GetGOInfo()->spellFocus.focusId == CAMPFIRE_FOCUS_ID)
+    {
+        _fire.Relocate(fire->GetPositionX(), fire->GetPositionY(), fire->GetPositionZ());
+        return true;
+    }
+
+    if (!sObjectMgr->GetGameObjectTemplate(GO_BASIC_CAMPFIRE))
+        return false;
+
+    _me->HandleEmoteCommand(EMOTE_ONESHOT_KNEEL);
+    GameObject* summoned = _me->SummonGameObject(GO_BASIC_CAMPFIRE, pos.GetPositionX(), pos.GetPositionY(),
+        pos.GetPositionZ(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 15 * MINUTE);
+    if (!summoned)
+        return false;
+
+    _campfire = summoned->GetGUID();
+    _fire.Relocate(pos);
+    return true;
+}
+
+// 1 on 1 roleplay: the bot sits down at a campfire and tells the player a story OpenAI makes up
+bool BotActivity::StartStoryWith(Player const* player)
+{
+    if (IsTellingStoryTo(player->GetGUID()))
+        return true;
+    if (!_me->IsInWorld() || !_me->IsAlive() || _me->IsInCombat() || _ai->IsDuringTeleport() ||
+        _me->GetMap()->IsBattlegroundOrArena())
+        return false;
+    if (!player->IsInWorld() || player->GetMap() != _me->GetMap() ||
+        !_me->IsWithinDistInMap(player, STORY_START_MAX_DISTANCE))
+        return false;
+
+    Stop();
+
+    if (_me->isMoving())
+        _me->BotStopMovement();
+
+    // the fire between the bot and the player
+    float fireDist = std::min(_me->GetExactDist2d(player) * 0.5f, 3.0f);
+    Position firePos = _me->GetFirstCollisionPosition(fireDist, _me->GetRelativeAngle(player));
+    if (!PlaceCampfire(firePos, ROLEPLAY_CAMPFIRE_SEARCH_RADIUS))
+        _fire.Relocate(firePos);
+
+    // a seat at the fire on the bot's side, facing the fire
+    float angle = _fire.GetAbsoluteAngle(_me);
+    float x = _fire.GetPositionX() + STORY_SEAT_DISTANCE * std::cos(angle);
+    float y = _fire.GetPositionY() + STORY_SEAT_DISTANCE * std::sin(angle);
+    float z = _fire.GetPositionZ();
+    _me->UpdateGroundPositionZ(x, y, z);
+    _seat.Relocate(x, y, z, Position::NormalizeOrientation(angle + float(M_PI)));
+    _seated = false;
+
+    _mode = BOT_ACTIVITY_STORY;
+    _requested = true;
+    _modeTimer = STORY_MAX_TIME;
+    _storyPlayer = player->GetGUID();
+    _storyTranscript.clear();
+    _storyLength = uint8(urand(5, 10));
+    _storyLinesTold = 0;
+    _storyWaiting = false;
+    _storyEnding = false;
+    _storyTimer = urand(3000, 5000);
+    _ai->HoldPosition(HOLD_POSITION_TIME);
+    return true;
+}
+
+void BotActivity::UpdateStory(uint32 diff)
+{
+    Player* player = ObjectAccessor::GetPlayer(*_me, _storyPlayer);
+    if (!player || !player->IsInWorld() || !_me->IsWithinDistInMap(player, STORY_MAX_PLAYER_DISTANCE) ||
+        _modeTimer <= diff)
+    {
+        Stop();
+        return;
+    }
+    _modeTimer -= diff;
+
+    UpdateSeat();
+
+    if (_storyTimer > diff)
+    {
+        _storyTimer -= diff;
+        return;
+    }
+    _storyTimer = 0;
+
+    // the story is over, or no answer came
+    if (_storyEnding || _storyWaiting)
+    {
+        Stop();
+        return;
+    }
+
+    if (_ai->GetChatter().RequestStoryStep(player))
+    {
+        _storyWaiting = true;
+        _storyTimer = STORY_ANSWER_TIMEOUT;
+    }
+    else
+        _storyTimer = 5000;
+}
+
+void BotActivity::OnStoryComment(std::string_view comment)
+{
+    if (!IsTellingStory() || comment.empty())
+        return;
+
+    _storyTranscript.push_back({ false, std::string(comment) });
+    // answer soon
+    if (!_storyWaiting && !_storyEnding)
+        _storyTimer = std::min<uint32>(_storyTimer, 2000);
+}
+
+void BotActivity::OnStoryLine(std::string const& line, bool end)
+{
+    if (!IsTellingStory())
+        return;
+
+    _storyWaiting = false;
+    if (!line.empty())
+        _storyTranscript.push_back({ true, line });
+    ++_storyLinesTold;
+
+    if (end || _storyLinesTold >= _storyLength + 2)
+    {
+        // let the goodbye sink in
+        _storyEnding = true;
+        _storyTimer = 8000;
+    }
+    else
+        _storyTimer = urand(5000, 8000);
 }
 
 void BotActivity::SitDown()
@@ -219,8 +412,9 @@ void BotActivity::UpdateRest(uint32 diff)
     }
     _modeTimer -= diff;
 
-    // something made us stand up (talking, a spell...), sit down again
-    if (!_me->isMoving() && _me->GetStandState() == UNIT_STAND_STATE_STAND)
+    // something made us stand up (talking, a spell...), sit down again, not in the middle of a dance
+    if (!_me->isMoving() && _me->GetStandState() == UNIT_STAND_STATE_STAND &&
+        !_ai->GetChatter().IsPerformingStateEmote())
         SitDown();
 }
 
@@ -322,7 +516,8 @@ void BotActivity::UpdateSeat()
 {
     if (_seated)
     {
-        if (!_me->isMoving() && _me->GetStandState() == UNIT_STAND_STATE_STAND)
+        if (!_me->isMoving() && _me->GetStandState() == UNIT_STAND_STATE_STAND &&
+            !_ai->GetChatter().IsPerformingStateEmote())
             SitDown();
         return;
     }

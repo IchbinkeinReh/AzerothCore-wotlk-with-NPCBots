@@ -1092,7 +1092,8 @@ void bot_ai::SetBotCommandState(uint32 st, bool force, Position* newpos, float* 
     if (mover)
     {
         if ((st & BOT_COMMAND_FOLLOW) && !IsChanneling() &&
-            (force || (!mover->isMoving() && !IsCasting() && master->IsAlive() && !Feasting() && !IsTalking())))
+            (force || (!mover->isMoving() && !IsCasting() && master->IsAlive() && !Feasting() && !IsTalking() &&
+                !_activity.IsSeated())))
         {
             if (!me->IsInMap(master)) return;
             if (CCed(mover, true)/* || master->HasUnitState(UNIT_STATE_FLEEING)*/) return;
@@ -3276,6 +3277,10 @@ void bot_ai::SetStats(bool force)
 //Emotion-based action
 void bot_ai::ReceiveEmote(Player* player, uint32 emote)
 {
+    // the owner's commands end resting and storytelling
+    if (player == master && (emote == TEXT_EMOTE_WAVE || emote == TEXT_EMOTE_STAND))
+        _activity.Stop();
+
     switch (emote)
     {
         case TEXT_EMOTE_BONK:

@@ -60,7 +60,8 @@ enum BotChatterReplyMode : uint8
     BOT_CHATTER_REPLY_PARTY,
     BOT_CHATTER_REPLY_RAID,
     BOT_CHATTER_REPLY_CHANNEL,
-    BOT_CHATTER_REPLY_WHISPER
+    BOT_CHATTER_REPLY_WHISPER,
+    BOT_CHATTER_REPLY_STORY     // the next sentence of a story told to the player
 };
 
 class BotChatter
@@ -76,6 +77,10 @@ public:
     // a line of a text id in /say (campfire stories), localized for each listener
     bool SayText(uint32 textId, uint8 slot);
     void DoTextEmote(uint32 textEmote);
+    // asks OpenAI for the next sentence of the story told to the player, see BotActivity
+    bool RequestStoryStep(Player const* player);
+    // dancing, sleeping... for a few seconds
+    bool IsPerformingStateEmote() const { return _stateEmoteTimer > 0; }
 
     // player chat hooks, called from the world thread
     static void OnPlayerSay(Player const* player, std::string_view message);
@@ -142,6 +147,8 @@ private:
     bool SayToZoneChannel(ChatterText const& text, WorldObject const* subject, bool ignoreCooldown);
     bool WhisperTo(ChatterText const& text, Player* player);
     void PerformEmote(uint32 textEmote, Player* target);
+    void EndStateEmote();
+    void ApplyAIActivity(std::string const& activity, Player const* player);
     // stand still for about as long as typing the message would take
     void PauseToType(ChatterText const& text, WorldObject const* subject);
     void ReactToEmote(Player* player, uint32 textEmote, bool atMe);
@@ -172,6 +179,10 @@ private:
     std::unordered_map<ObjectGuid, AIHistory> _aiHistory;
     // waiting for an answer until then
     time_t _aiPendingUntil;
+
+    // lasting emote (dance, sleep, sit, kneel) until the timer runs out
+    uint32 _stateEmote;
+    uint32 _stateEmoteTimer;
 
     // emote answering a player's emote
     uint32 _emoteReaction;

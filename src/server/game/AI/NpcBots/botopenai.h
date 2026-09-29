@@ -25,8 +25,12 @@ struct BotAIRequest
     uint8 replyMode;
     std::string instructions;
     std::vector<BotAIMessage> input;
-    // emotes the bot may answer with, empty for a plain text answer
+    // emotes the bot may answer with
     std::vector<std::string> emotes;
+    // the answer may change what the bot is doing (activity field)
+    bool allowActivity = false;
+    // a sentence of a story told to the player (story_end field)
+    bool storyStep = false;
 };
 
 struct BotAIResult
@@ -36,6 +40,8 @@ struct BotAIResult
     uint8 replyMode;
     std::string text; // empty on failure or emote only
     std::string emote; // empty or "none" if no emote
+    std::string activity; // empty or "keep" if unchanged, "active", "rest", "story"
+    bool storyEnd = false;
 };
 
 class BotOpenAI

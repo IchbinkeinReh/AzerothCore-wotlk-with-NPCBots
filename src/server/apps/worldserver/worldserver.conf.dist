@@ -5539,7 +5539,11 @@ NpcBot.WanderingBots.Continents.DespawnDelay = 300
 #                     - rest: sitting at a spot without hostile creatures around for 1-3 minutes
 #                     - roleplay: 2-5 bots sitting around a campfire (an existing one nearby or a
 #                       conjured one) telling each other stories, with reactions of the listeners
-#                     Fights, being hired or leaving the world end an activity.
+#                     Fights, being hired or leaving the world end an activity. Hired bots never change
+#                     their activity on their own.
+#        Note:        With NpcBot.Chatter.OpenAI.Enable players can ask any bot (hired ones too) to rest or
+#                     to tell a story: the bot sits down at a campfire and tells a story OpenAI makes up,
+#                     5-10 sentences, reacting to what the player says.
 #        Default:     1 - (Enabled)
 #                     0 - (Disabled)
 

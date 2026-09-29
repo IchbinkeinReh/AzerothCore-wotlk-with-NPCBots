@@ -293,7 +293,7 @@ namespace
             case TEXT_EMOTE_BYE:        reactions = { TEXT_EMOTE_BYE, TEXT_EMOTE_WAVE };            break;
             case TEXT_EMOTE_CHEER:
             case TEXT_EMOTE_VICTORY:    reactions = { TEXT_EMOTE_CHEER, TEXT_EMOTE_APPLAUD };       break;
-            case TEXT_EMOTE_DANCE:
+            case TEXT_EMOTE_DANCE:      reactions = { TEXT_EMOTE_DANCE, TEXT_EMOTE_APPLAUD };       break;
             case TEXT_EMOTE_FLEX:       reactions = { TEXT_EMOTE_APPLAUD, TEXT_EMOTE_LAUGH };       break;
             case TEXT_EMOTE_LAUGH:
             case TEXT_EMOTE_ROFL:
@@ -483,7 +483,7 @@ namespace
 BotChatter::BotChatter(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot),
     _greetTimer(urand(2000, 5000)), _idleTimer(urand(30000, 90000)),
     _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0), _aiPendingUntil(0),
-    _emoteReaction(0), _emoteTimer(0)
+    _stateEmote(0), _stateEmoteTimer(0), _emoteReaction(0), _emoteTimer(0)
 {
 }
 
@@ -518,6 +518,14 @@ void BotChatter::TextBuilder::operator()(WorldPacket& data, LocaleConstant local
 
 void BotChatter::Update(uint32 diff)
 {
+    if (_stateEmoteTimer)
+    {
+        if (_stateEmoteTimer <= diff || _me->IsInCombat() || !_me->IsAlive())
+            EndStateEmote();
+        else
+            _stateEmoteTimer -= diff;
+    }
+
     if (_emoteTimer)
     {
         if (_emoteTimer <= diff)
@@ -734,6 +742,12 @@ void BotChatter::ReplyToWhisper(Player* player, std::string_view message)
     if (!_me->IsAlive() || _ai->IsDuringTeleport())
         return;
 
+    if (_ai->GetActivity().IsTellingStoryTo(player->GetGUID()))
+    {
+        _ai->GetActivity().OnStoryComment(message);
+        return;
+    }
+
     if (!_me->IsInCombat() && !IsAIPending() && RequestAIReply(player, message, BOT_CHATTER_REPLY_WHISPER))
         return;
 
@@ -839,6 +853,16 @@ void BotChatter::HandlePlayerMessage(Player const* player, std::string_view mess
     const bool canned = GetReplyCategory(normalized, category);
     if (!ai && !canned)
         return;
+
+    // a bot telling this player a story takes the remark into it
+    for (Creature* bot : bots)
+    {
+        if (bot->GetBotAI() && bot->GetBotAI()->GetActivity().IsTellingStoryTo(player->GetGUID()))
+        {
+            bot->GetBotAI()->GetActivity().OnStoryComment(message);
+            return;
+        }
+    }
 
     LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
 
@@ -957,6 +981,7 @@ bool BotChatter::RequestAIReply(Player const* player, std::string_view message, 
         request.instructions += "\n\nRecent messages in this chat, oldest first:\n" + context;
 
     request.input.push_back({ false, std::string(message) });
+    request.allowActivity = true;
 
     if (BotCfg::IsBotOpenAIEmotesEnabled())
         for (ChatterEmote const& emote : ChatterEmotes)
@@ -1000,11 +1025,31 @@ void BotChatter::ProcessAIReplies()
 
 void BotChatter::OnAIReply(BotAIResult const& result)
 {
-    _aiPendingUntil = 0;
-
     ChatterText text;
     text.raw = SanitizeAIText(result.text);
     uint32 textEmote = FindChatterEmote(result.emote);
+
+    // the next sentence of a story told to the player
+    if (result.replyMode == BOT_CHATTER_REPLY_STORY)
+    {
+        BotActivity& activity = _ai->GetActivity();
+        if (!activity.IsTellingStoryTo(result.playerGuid))
+            return;
+
+        Player* player = ObjectAccessor::FindConnectedPlayer(result.playerGuid);
+        if (textEmote)
+            PerformEmote(textEmote, player);
+        if (!text.raw.empty() && player)
+            SayNearby(text, player, CHAT_MSG_MONSTER_SAY);
+
+        activity.OnStoryLine(text.raw, result.storyEnd);
+        return;
+    }
+
+    _aiPendingUntil = 0;
+
+    ApplyAIActivity(result.activity, ObjectAccessor::FindConnectedPlayer(result.playerGuid));
+
     if (text.raw.empty() && !textEmote)
         return;
 
@@ -1027,6 +1072,55 @@ void BotChatter::OnAIReply(BotAIResult const& result)
         DeliverReply(text, result.playerGuid, BotChatterReplyMode(result.replyMode));
 }
 
+// OpenAI decided the bot should change what it is doing
+void BotChatter::ApplyAIActivity(std::string const& activity, Player const* player)
+{
+    BotActivity& botActivity = _ai->GetActivity();
+    if (activity == "active")
+        botActivity.Stop();
+    else if (activity == "rest")
+        botActivity.RequestRest(player);
+    else if (activity == "story" && player)
+        botActivity.StartStoryWith(player);
+}
+
+bool BotChatter::RequestStoryStep(Player const* player)
+{
+    if (!BotOpenAI::IsEnabled())
+        return false;
+
+    BotActivity const& activity = _ai->GetActivity();
+
+    std::ostringstream ss;
+    ss << BuildAIInstructions(player, BOT_CHATTER_REPLY_STORY)
+        << "\n\nYou are telling " << player->GetName() << " a story you make up, fitting your character and the "
+        << "world of Warcraft. The story has about " << uint32(activity.GetStoryLength()) << " sentences, you told "
+        << uint32(activity.GetStoryLinesTold()) << " so far. Answer with the next single sentence of the story only. "
+        << "If " << player->GetName() << " said something since your last sentence, react to it briefly in the same "
+        << "answer and let it shape the story. With the last sentence finish the story, set story_end and ";
+    if (IsOwnedBy(player))
+        ss << "suggest to " << player->GetName() << " that you move on together.";
+    else
+        ss << "say goodbye to " << player->GetName() << ".";
+
+    BotAIRequest request;
+    request.botEntry = _me->GetEntry();
+    request.playerGuid = player->GetGUID();
+    request.replyMode = uint8(BOT_CHATTER_REPLY_STORY);
+    request.instructions = ss.str();
+    request.input = activity.GetStoryTranscript();
+    if (request.input.empty() || request.input.back().fromBot)
+        request.input.push_back({ false, request.input.empty() ? "(Begin the story.)" : "(Go on.)" });
+    request.storyStep = true;
+
+    if (BotCfg::IsBotOpenAIEmotesEnabled())
+        for (ChatterEmote const& emote : ChatterEmotes)
+            if (sEmotesTextStore.LookupEntry(emote.textEmote))
+                request.emotes.emplace_back(emote.name);
+
+    return BotOpenAI::Enqueue(std::move(request));
+}
+
 std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterReplyMode mode) const
 {
     std::ostringstream ss;
@@ -1047,6 +1141,8 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
         ss << "Right now you are resting, sitting on the ground. ";
     else if (_ai->GetActivity().IsInRoleplay())
         ss << "Right now you sit with other adventurers around a campfire, telling each other stories. ";
+    else if (_ai->GetActivity().IsTellingStory())
+        ss << "Right now you sit at a campfire, telling a story. ";
     else if (Player const* owner = _ai->GetBotOwner())
         ss << "You are a hired companion of " << owner->GetName()
             << (owner == player ? ", the one talking to you" : "") << ". ";
@@ -1070,6 +1166,11 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
         ss << " You can also perform an emote like a player typing /wave, pick none if no emote fits. "
             << "The message may be empty when the emote alone is your answer.";
 
+    if (mode != BOT_CHATTER_REPLY_STORY)
+        ss << " With activity you can change what you are doing when it fits the conversation: rest to sit down, "
+            << "story when the player wants to hear a story (you will then tell it sentence by sentence), active to "
+            << "get up and go on, otherwise keep.";
+
     if (!BotCfg::GetBotOpenAIInstructions().empty())
         ss << ' ' << BotCfg::GetBotOpenAIInstructions();
 
@@ -1090,8 +1191,8 @@ bool BotChatter::CanChat(bool unprompted, bool inCombat) const
     // hired bots only speak when spoken to, unless allowed to chatter
     if (unprompted && !_ai->IAmFree() && !BotCfg::IsBotChatterHiredBotsEnabled())
         return false;
-    // listening to campfire stories
-    if (unprompted && _ai->GetActivity().IsInRoleplay())
+    // listening to or telling campfire stories
+    if (unprompted && (_ai->GetActivity().IsInRoleplay() || _ai->GetActivity().IsTellingStory()))
         return false;
     if (_me->GetMap()->IsBattleArena())
         return false;
@@ -1379,11 +1480,33 @@ void BotChatter::PerformEmote(uint32 textEmote, Player* target)
 
     switch (emote->textid)
     {
-        // lasting states would stick to the bot
+        // lasting states only for a few seconds, standing still meanwhile
+        case EMOTE_STATE_DANCE:
         case EMOTE_STATE_SLEEP:
         case EMOTE_STATE_SIT:
         case EMOTE_STATE_KNEEL:
-        case EMOTE_STATE_DANCE:
+        {
+            if (_me->IsInCombat())
+                break;
+
+            EndStateEmote();
+            uint32 duration = emote->textid == EMOTE_STATE_DANCE ? urand(3000, 5000) : urand(5000, 8000);
+            _ai->PauseForTalking(duration);
+            if (target)
+                _me->SetFacingToObject(target);
+
+            switch (emote->textid)
+            {
+                case EMOTE_STATE_DANCE: _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_DANCE); break;
+                case EMOTE_STATE_SLEEP: _me->SetStandState(UNIT_STAND_STATE_SLEEP);                 break;
+                case EMOTE_STATE_SIT:   _me->SetStandState(UNIT_STAND_STATE_SIT);                   break;
+                default:                _me->SetStandState(UNIT_STAND_STATE_KNEEL);                 break;
+            }
+
+            _stateEmote = emote->textid;
+            _stateEmoteTimer = duration;
+            break;
+        }
         case EMOTE_ONESHOT_NONE:
             break;
         default:
@@ -1397,6 +1520,21 @@ void BotChatter::PerformEmote(uint32 textEmote, Player* target)
     Acore::LocalizedPacketDo<EmoteBuilder> localizer(builder);
     Acore::PlayerDistWorker<Acore::LocalizedPacketDo<EmoteBuilder>> worker(_me, range, localizer);
     Cell::VisitObjects(_me, worker, range);
+}
+
+// back to what the bot was doing: standing, or sitting when resting or at a campfire
+void BotChatter::EndStateEmote()
+{
+    if (!_stateEmote)
+        return;
+
+    if (_stateEmote == EMOTE_STATE_DANCE)
+        _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_ONESHOT_NONE);
+    else if (_me->IsAlive())
+        _me->SetStandState(_ai->GetActivity().IsSeated() ? UNIT_STAND_STATE_SIT : UNIT_STAND_STATE_STAND);
+
+    _stateEmote = 0;
+    _stateEmoteTimer = 0;
 }
 
 bool BotChatter::WhisperTo(ChatterText const& text, Player* player)
