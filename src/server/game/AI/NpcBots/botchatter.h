@@ -73,6 +73,10 @@ public:
     void OnKilledUnit(Unit const* victim);
     void OnLevelUp();
 
+    // a line of a text id in /say (campfire stories), localized for each listener
+    bool SayText(uint32 textId, uint8 slot);
+    void DoTextEmote(uint32 textEmote);
+
     // player chat hooks, called from the world thread
     static void OnPlayerSay(Player const* player, std::string_view message);
     static void OnPlayerGroupChat(Player const* player, Group* group, ChatMsg msgType, std::string_view message);

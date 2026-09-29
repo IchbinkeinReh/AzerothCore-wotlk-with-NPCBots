@@ -614,6 +614,19 @@ void BotChatter::OnKilledUnit(Unit const* victim)
     Chatter(category, victim, category != BOT_CHATTER_KILL_NORMAL);
 }
 
+bool BotChatter::SayText(uint32 textId, uint8 slot)
+{
+    ChatterText text;
+    text.textId = textId;
+    text.slot = slot;
+    return SayNearby(text, nullptr, CHAT_MSG_MONSTER_SAY);
+}
+
+void BotChatter::DoTextEmote(uint32 textEmote)
+{
+    PerformEmote(textEmote, nullptr);
+}
+
 void BotChatter::OnLevelUp()
 {
     if (CanChat(true, true) && roll_chance_i(BotCfg::GetBotChatterEventChance()))
@@ -1029,6 +1042,11 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
     if (_ai->IAmFree())
         ss << (_ai->IsWanderer() ? "You are an adventurer travelling the world on your own. " :
             "You are a mercenary waiting to be hired. ");
+
+    if (_ai->GetActivity().IsResting())
+        ss << "Right now you are resting, sitting on the ground. ";
+    else if (_ai->GetActivity().IsInRoleplay())
+        ss << "Right now you sit with other adventurers around a campfire, telling each other stories. ";
     else if (Player const* owner = _ai->GetBotOwner())
         ss << "You are a hired companion of " << owner->GetName()
             << (owner == player ? ", the one talking to you" : "") << ". ";
@@ -1071,6 +1089,9 @@ bool BotChatter::CanChat(bool unprompted, bool inCombat) const
         return false;
     // hired bots only speak when spoken to, unless allowed to chatter
     if (unprompted && !_ai->IAmFree() && !BotCfg::IsBotChatterHiredBotsEnabled())
+        return false;
+    // listening to campfire stories
+    if (unprompted && _ai->GetActivity().IsInRoleplay())
         return false;
     if (_me->GetMap()->IsBattleArena())
         return false;

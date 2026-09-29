@@ -144,6 +144,11 @@ static bool _wanderingFreeLootSkinning;
 static bool _wanderingSpawnNearPlayers;
 static uint32 _wanderingMaxPerGrid;
 static uint32 _wanderingDespawnDelay;
+static bool _activitiesEnable;
+static uint32 _activitiesIntervalMin;
+static uint32 _activitiesIntervalMax;
+static uint32 _activitiesRestChance;
+static uint32 _activitiesRoleplayChance;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
@@ -489,6 +494,11 @@ private:
         _wanderingSpawnNearPlayers      = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Continents.SpawnNearPlayers", true);
         _wanderingMaxPerGrid            = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Continents.MaxPerGrid", 100);
         _wanderingDespawnDelay          = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Continents.DespawnDelay", 300);
+        _activitiesEnable               = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Activities.Enable", true);
+        _activitiesIntervalMin          = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.IntervalMin", 120);
+        _activitiesIntervalMax          = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.IntervalMax", 300);
+        _activitiesRestChance           = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.RestChance", 15);
+        _activitiesRoleplayChance       = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.RoleplayChance", 10);
         _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
         _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
         _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
@@ -747,6 +757,10 @@ private:
         RoundToInterval(_chatterReplyChance, uint32(0), uint32(100));
         RoundToInterval(_chatterEventChance, uint32(0), uint32(100));
         RoundToInterval(_guildsChance, uint32(0), uint32(100));
+        RoundToInterval(_activitiesIntervalMin, uint32(10), uint32(DAY));
+        RoundToInterval(_activitiesIntervalMax, _activitiesIntervalMin, uint32(DAY));
+        RoundToInterval(_activitiesRestChance, uint32(0), uint32(100));
+        RoundToInterval(_activitiesRoleplayChance, uint32(0), uint32(100) - _activitiesRestChance);
         RoundToInterval(_openaiMaxOutputTokens, uint32(16), uint32(4096));
         RoundToInterval(_openaiTimeout, uint32(1), uint32(120));
         RoundToInterval(_openaiThreads, uint32(1), uint32(16));
@@ -1333,6 +1347,26 @@ uint32 BotCfg::GetMaxWanderingBotsPerGrid()
 uint32 BotCfg::GetBotWandererDespawnDelay()
 {
     return _wanderingDespawnDelay;
+}
+bool BotCfg::IsBotActivitiesEnabled()
+{
+    return _activitiesEnable;
+}
+uint32 BotCfg::GetBotActivitiesIntervalMin()
+{
+    return _activitiesIntervalMin;
+}
+uint32 BotCfg::GetBotActivitiesIntervalMax()
+{
+    return _activitiesIntervalMax;
+}
+uint32 BotCfg::GetBotActivitiesRestChance()
+{
+    return _activitiesRestChance;
+}
+uint32 BotCfg::GetBotActivitiesRoleplayChance()
+{
+    return _activitiesRoleplayChance;
 }
 bool BotCfg::IsBotOpenAIEnabled()
 {

@@ -5533,6 +5533,36 @@ NpcBot.WanderingBots.Continents.MaxPerGrid = 100
 NpcBot.WanderingBots.Continents.DespawnDelay = 300
 
 #
+#    NpcBot.WanderingBots.Activities.Enable
+#        Description: Let wandering bots do more than wandering. They spawn active (wandering) and
+#                     every IntervalMin-IntervalMax seconds they may switch to:
+#                     - rest: sitting at a spot without hostile creatures around for 1-3 minutes
+#                     - roleplay: 2-5 bots sitting around a campfire (an existing one nearby or a
+#                       conjured one) telling each other stories, with reactions of the listeners
+#                     Fights, being hired or leaving the world end an activity.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.WanderingBots.Activities.Enable = 1
+
+#
+#    NpcBot.WanderingBots.Activities.IntervalMin
+#    NpcBot.WanderingBots.Activities.IntervalMax
+#    NpcBot.WanderingBots.Activities.RestChance
+#    NpcBot.WanderingBots.Activities.RoleplayChance
+#        Description: Time in seconds between decisions of an active wandering bot, and the chances (%)
+#                     to start resting or a campfire round. Otherwise the bot stays active.
+#        Default:     120 - (NpcBot.WanderingBots.Activities.IntervalMin)
+#                     300 - (NpcBot.WanderingBots.Activities.IntervalMax)
+#                     15  - (NpcBot.WanderingBots.Activities.RestChance)
+#                     10  - (NpcBot.WanderingBots.Activities.RoleplayChance)
+
+NpcBot.WanderingBots.Activities.IntervalMin    = 120
+NpcBot.WanderingBots.Activities.IntervalMax    = 300
+NpcBot.WanderingBots.Activities.RestChance     = 15
+NpcBot.WanderingBots.Activities.RoleplayChance = 10
+
+#
 #    NpcBot.Guilds.Enable
 #    NpcBot.Guilds.Chance
 #        Description: Give bots a guild name, like players have. Each bot gets a random but stable

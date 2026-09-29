@@ -159,7 +159,8 @@ static void ApplyBotPercentModFloatVar(float &var, float val, bool apply)
 bot_ai::bot_ai(Creature* creature) : CreatureAI(creature),
     _botData(const_cast<NpcBotData*>(BotDataMgr::SelectNpcBotData(IsTempBot() ? creature->ToTempSummon()->GetSummonerGUID().GetEntry() : creature->GetEntry()))),
     _botExtras(BotDataMgr::SelectNpcBotExtras(creature->GetEntry())),
-    _chatter(this, creature)
+    _chatter(this, creature),
+    _activity(this, creature)
 {
     _checkMasterTimer = me->IsSummon() ? 0 : urand(5000, 15000);
     _updateTimerLong = urand(15000, 25000);
@@ -17799,6 +17800,7 @@ bool bot_ai::GlobalUpdate(uint32 diff)
     }
 
     _chatter.Update(diff);
+    _activity.Update(diff);
 
     if (doHealth)
     {

@@ -110,6 +110,11 @@ public:
     static bool SpawnWanderingBotsNearPlayers();
     static uint32 GetMaxWanderingBotsPerGrid();
     static uint32 GetBotWandererDespawnDelay();
+    static bool IsBotActivitiesEnabled();
+    static uint32 GetBotActivitiesIntervalMin();
+    static uint32 GetBotActivitiesIntervalMax();
+    static uint32 GetBotActivitiesRestChance();
+    static uint32 GetBotActivitiesRoleplayChance();
     static bool IsBotGuildsEnabled();
     static bool IsBotOpenAIEnabled();
     static std::string const& GetBotOpenAIApiKey();

@@ -1,6 +1,7 @@
 #ifndef BOT_AI_H
 #define BOT_AI_H
 
+#include "botactivity.h"
 #include "botchatter.h"
 #include "botcommon.h"
 
@@ -128,6 +129,8 @@ public:
 
     EventProcessor* GetEvents() { return &Events; }
     BotChatter& GetChatter() { return _chatter; }
+    BotActivity& GetActivity() { return _activity; }
+    BotActivity const& GetActivity() const { return _activity; }
     ObjectGuid::LowType GetBotOwnerGuid() const;
     bool HasSharedOwner(ObjectGuid::LowType guid_low) const;
     bool HasOwner(ObjectGuid::LowType guid_low) const;
@@ -201,6 +204,8 @@ public:
     // stand still for a moment while "typing" a chat message
     void PauseForTalking(uint32 duration);
     bool IsTalking() const { return _talkTimer > 0; }
+    // wanderers stay where they are for a while (activities)
+    void HoldPosition(uint32 duration) { evadeDelayTimer = std::max(evadeDelayTimer, duration); }
     // generated at runtime (wanderers, hired wanderers): no spawn to return to, not saved
     bool IsGeneratedBot() const;
     static bool IsWanderNodeAvailableForBotFaction(WanderNode const* wp, uint32 factionTemplateId, bool teleport, bool spawn = false);
@@ -791,6 +796,7 @@ private:
     uint16 _playerKillsCount{};
 
     BotChatter _chatter;
+    BotActivity _activity;
 
     TeleportHomeEvent* teleHomeEvent{};
     TeleportFinishEvent* teleFinishEvent{};

@@ -458,6 +458,7 @@ enum BotTexts : uint32
     BOT_TEXT_CHATTER_WHISPER_REPLY          = 71017, //"What's up, %target?"
     BOT_TEXT_CHATTER_WHISPER_BUSY           = 71018, //"Busy fighting, talk later!"
     //71019-71100 reserved for bot chatter texts
+    //71101-71200 campfire stories: lines 71101+2k, listener reactions 71102+2k, see botactivity.h
 };
 
 #endif //BOTTEXT_H
