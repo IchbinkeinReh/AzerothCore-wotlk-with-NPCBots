@@ -598,9 +598,12 @@ void WorldUpdateLoop()
         realCurrTime = getMSTime();
 
         uint32 diff = getMSTimeDiff(realPrevTime, realCurrTime);
-        if (diff < minUpdateDiff)
+        //npcbot: tick slower while no player is logged in, logins still get processed within 100 ms
+        uint32 const tickDiff = sWorldSessionMgr->GetPlayerCount() ? minUpdateDiff : std::max<uint32>(minUpdateDiff, 100);
+        //end npcbot
+        if (diff < tickDiff)
         {
-            uint32 sleepTime = minUpdateDiff - diff;
+            uint32 sleepTime = tickDiff - diff;
             if (sleepTime >= halfMaxCoreStuckTime)
                 LOG_ERROR("server.worldserver", "WorldUpdateLoop() waiting for {} ms with MaxCoreStuckTime set to {} ms", sleepTime, maxCoreStuckTime);
             // sleep until enough time passes that we can update all timers
