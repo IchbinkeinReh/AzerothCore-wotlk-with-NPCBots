@@ -5924,8 +5924,9 @@ NpcBot.Chatter.OpenAI.Emotes = 1
 
 #
 #    NpcBot.Chatter.OpenAI.ChatContextSize
-#        Description: Number of recent party/raid or General channel messages (players and bots) given
-#                     to a bot answering in that chat.
+#        Description: Number of recent messages per chat a bot remembers and gets as context for its
+#                     answers: what it said and heard in /say, its whispers, its party/raid chat and the
+#                     General channel of its zone (players and bots, last 30 minutes).
 #        Default:     20
 
 NpcBot.Chatter.OpenAI.ChatContextSize = 20

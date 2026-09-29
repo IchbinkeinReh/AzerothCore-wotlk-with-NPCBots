@@ -121,7 +121,7 @@ public:
 
 private:
     static void HandlePlayerMessage(Player const* player, std::string_view message, BotChatterReplyMode mode,
-        std::vector<Creature*> const& bots);
+        std::vector<Creature*> const& bots, ObjectGuid preferredBot = ObjectGuid::Empty);
 
     void ReplyToWhisper(Player* player, std::string_view message);
 
@@ -170,13 +170,20 @@ private:
     BotChatterReplyMode _replyMode;
     uint32 _replyTimer;
 
-    // OpenAI conversation per player
-    struct AIHistory
+    // what the bot said and heard in /say and whispers, context for OpenAI answers (party/raid and General are
+    // shared logs)
+    struct ChatMemoryLine
     {
-        time_t lastUse;
-        std::deque<BotAIMessage> messages;
+        std::string speaker;
+        std::string text;
+        time_t time;
     };
-    std::unordered_map<ObjectGuid, AIHistory> _aiHistory;
+    std::deque<ChatMemoryLine> _sayMemory;
+    std::deque<ChatMemoryLine> _whisperMemory;
+
+    static void Remember(std::deque<ChatMemoryLine>& memory, std::string_view speaker, std::string_view text);
+    static std::string GetMemoryText(std::deque<ChatMemoryLine> const& memory);
+    std::string BuildAIContext(Player const* player) const;
     // waiting for an answer until then
     time_t _aiPendingUntil;
 

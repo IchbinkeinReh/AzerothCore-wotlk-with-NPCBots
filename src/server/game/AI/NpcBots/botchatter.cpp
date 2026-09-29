@@ -207,8 +207,6 @@ namespace
         return true;
     }
 
-    constexpr std::size_t CHATTER_AI_HISTORY_SIZE = 8;
-    constexpr time_t CHATTER_AI_HISTORY_EXPIRE = 15 * MINUTE;
     constexpr std::size_t CHATTER_AI_MAX_TEXT_LENGTH = 240;
 
     // world and map threads (emotes)
@@ -360,6 +358,7 @@ namespace
     // recent party/raid and General channel messages, context for OpenAI answers
     struct ChatLogLine
     {
+        ObjectGuid speakerGuid;
         std::string speaker;
         std::string text;
         time_t time;
@@ -380,7 +379,7 @@ namespace
         return (uint64(2) << 32) | (uint64(zoneId) << 2) | uint64(team);
     }
 
-    void LogChatLine(uint64 key, std::string_view speaker, std::string_view text)
+    void LogChatLine(uint64 key, ObjectGuid speakerGuid, std::string_view speaker, std::string_view text)
     {
         const uint32 size = BotCfg::GetBotOpenAIChatContextSize();
         if (!size || text.empty() || !BotOpenAI::IsEnabled())
@@ -394,9 +393,26 @@ namespace
         });
 
         std::deque<ChatLogLine>& log = ChatLogs[key];
-        log.push_back({ std::string(speaker), std::string(text), now });
+        log.push_back({ speakerGuid, std::string(speaker), std::string(text), now });
         while (log.size() > size)
             log.pop_front();
+    }
+
+    // the bot that wrote last in a chat
+    ObjectGuid GetLastBotSpeaker(uint64 key)
+    {
+        time_t now = GameTime::GetGameTime().count();
+
+        std::lock_guard<std::mutex> lock(ChatLogsLock);
+        auto itr = ChatLogs.find(key);
+        if (itr == ChatLogs.end())
+            return ObjectGuid::Empty;
+
+        for (auto line = itr->second.rbegin(); line != itr->second.rend(); ++line)
+            if (line->speakerGuid.IsCreature() && line->time + CHATTER_CHAT_LOG_EXPIRE > now)
+                return line->speakerGuid;
+
+        return ObjectGuid::Empty;
     }
 
     std::string GetChatLogContext(uint64 key)
@@ -679,6 +695,10 @@ void BotChatter::OnPlayerSay(Player const* player, std::string_view message)
     Cell::VisitObjects(player, searcher, range);
 
     HandlePlayerMessage(player, message, BOT_CHATTER_REPLY_SAY, { found.begin(), found.end() });
+
+    for (Creature* bot : found)
+        if (bot->GetBotAI())
+            Remember(bot->GetBotAI()->GetChatter()._sayMemory, player->GetName(), message);
 }
 
 void BotChatter::OnPlayerGroupChat(Player const* player, Group* group, ChatMsg msgType, std::string_view message)
@@ -702,7 +722,7 @@ void BotChatter::OnPlayerGroupChat(Player const* player, Group* group, ChatMsg m
     bool raid = msgType == CHAT_MSG_RAID || msgType == CHAT_MSG_RAID_LEADER;
     HandlePlayerMessage(player, message, raid ? BOT_CHATTER_REPLY_RAID : BOT_CHATTER_REPLY_PARTY, bots);
 
-    LogChatLine(GroupChatLogKey(group), player->GetName(), message);
+    LogChatLine(GroupChatLogKey(group), player->GetGUID(), player->GetName(), message);
 }
 
 void BotChatter::OnPlayerChannelChat(Player const* player, Channel const* channel, std::string_view message)
@@ -729,9 +749,20 @@ void BotChatter::OnPlayerChannelChat(Player const* player, Channel const* channe
         }
     }
 
-    HandlePlayerMessage(player, message, BOT_CHATTER_REPLY_CHANNEL, bots);
+    // as a rule the bot that wrote last in the channel answers, wherever it is in the zone
+    uint64 logKey = ChannelChatLogKey(player->GetZoneId(), player->GetTeamId());
+    ObjectGuid lastBot = GetLastBotSpeaker(logKey);
+    if (!lastBot.IsEmpty() &&
+        std::ranges::none_of(bots, [lastBot](Creature const* bot) { return bot->GetGUID() == lastBot; }))
+    {
+        Creature* bot = ObjectAccessor::GetCreature(*player, lastBot);
+        if (bot && bot->IsAlive() && bot->GetZoneId() == player->GetZoneId())
+            bots.push_back(bot);
+    }
 
-    LogChatLine(ChannelChatLogKey(player->GetZoneId(), player->GetTeamId()), player->GetName(), message);
+    HandlePlayerMessage(player, message, BOT_CHATTER_REPLY_CHANNEL, bots, lastBot);
+
+    LogChatLine(logKey, player->GetGUID(), player->GetName(), message);
 }
 
 bool BotChatter::OnPlayerWhisper(Player* player, std::string const& botName, std::string_view message)
@@ -758,7 +789,9 @@ bool BotChatter::OnPlayerWhisper(Player* player, std::string const& botName, std
         message, 0, bot->GetNameForLocaleIdx(locale), "", 0, true);
     player->SendDirectMessage(&data);
 
-    bot->GetBotAI()->GetChatter().ReplyToWhisper(player, message);
+    BotChatter& chatter = bot->GetBotAI()->GetChatter();
+    chatter.ReplyToWhisper(player, message);
+    Remember(chatter._whisperMemory, player->GetName() + " to you", message);
     return true;
 }
 
@@ -864,7 +897,7 @@ void BotChatter::ReactToEmote(Player* player, uint32 textEmote, bool atMe)
 }
 
 void BotChatter::HandlePlayerMessage(Player const* player, std::string_view message, BotChatterReplyMode mode,
-    std::vector<Creature*> const& bots)
+    std::vector<Creature*> const& bots, ObjectGuid preferredBot)
 {
     if (bots.empty() || message.empty())
         return;
@@ -891,6 +924,8 @@ void BotChatter::HandlePlayerMessage(Player const* player, std::string_view mess
     }
 
     LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
+    // the bot that wrote last in the chat (General) answers as a rule
+    const bool preferLastSpeaker = !preferredBot.IsEmpty() && roll_chance_i(85);
 
     std::vector<BotChatter*> addressed;
     std::vector<BotChatter*> own;
@@ -902,6 +937,7 @@ void BotChatter::HandlePlayerMessage(Player const* player, std::string_view mess
             continue;
 
         bool isAddressed = player->GetTarget() == bot->GetGUID() ||
+            (preferLastSpeaker && bot->GetGUID() == preferredBot) ||
             ContainsPhrase(normalized, bot->GetName()) || ContainsPhrase(normalized, bot->GetNameForLocaleIdx(locale));
 
         BotChatter& chatter = ai->GetChatter();
@@ -979,32 +1015,16 @@ bool BotChatter::RequestAIReply(Player const* player, std::string_view message, 
             return false;
     }
 
-    std::erase_if(_aiHistory, [now](auto const& history) {
-        return history.second.lastUse + CHATTER_AI_HISTORY_EXPIRE <= now;
-    });
-    AIHistory& history = _aiHistory[player->GetGUID()];
-
     BotAIRequest request;
     request.botEntry = _me->GetEntry();
     request.playerGuid = player->GetGUID();
     request.replyMode = uint8(mode);
     request.instructions = BuildAIInstructions(player, mode);
 
-    // group and channel answers get the recent chat instead of the conversation with this player
-    std::string context;
-    bool chatLog = BotCfg::GetBotOpenAIChatContextSize() > 0;
-    if (chatLog && (mode == BOT_CHATTER_REPLY_PARTY || mode == BOT_CHATTER_REPLY_RAID))
-    {
-        if (Group const* group = _ai->GetGroup())
-            context = GetChatLogContext(GroupChatLogKey(group));
-    }
-    else if (chatLog && mode == BOT_CHATTER_REPLY_CHANNEL)
-        context = GetChatLogContext(ChannelChatLogKey(player->GetZoneId(), player->GetTeamId()));
-    else
-        request.input.assign(history.messages.begin(), history.messages.end());
-
+    // everything the bot recently said and heard, in any chat
+    std::string context = BuildAIContext(player);
     if (!context.empty())
-        request.instructions += "\n\nRecent messages in this chat, oldest first:\n" + context;
+        request.instructions += "\n\nWhat you recently said and heard, oldest first per chat:\n" + context;
 
     request.input.push_back({ false, std::string(message) });
     request.allowActivity = true;
@@ -1023,10 +1043,6 @@ bool BotChatter::RequestAIReply(Player const* player, std::string_view message, 
         AIPlayerCooldowns[player->GetGUID()] = now + BotCfg::GetBotOpenAIPlayerCooldown();
     }
 
-    history.lastUse = now;
-    history.messages.push_back({ false, std::string(message) });
-    while (history.messages.size() > CHATTER_AI_HISTORY_SIZE)
-        history.messages.pop_front();
 
     // a lost request does not block the bot forever
     _aiPendingUntil = now + BotCfg::GetBotOpenAITimeout() + MINUTE;
@@ -1078,18 +1094,6 @@ void BotChatter::OnAIReply(BotAIResult const& result)
 
     if (text.raw.empty() && !textEmote)
         return;
-
-    auto itr = _aiHistory.find(result.playerGuid);
-    if (itr != _aiHistory.end())
-    {
-        std::string line = textEmote ? '*' + result.emote + '*' : "";
-        if (!text.raw.empty())
-            line += (line.empty() ? "" : " ") + text.raw;
-
-        itr->second.messages.push_back({ true, std::move(line) });
-        while (itr->second.messages.size() > CHATTER_AI_HISTORY_SIZE)
-            itr->second.messages.pop_front();
-    }
 
     if (textEmote)
         PerformEmote(textEmote, ObjectAccessor::FindConnectedPlayer(result.playerGuid));
@@ -1225,6 +1229,48 @@ bool BotChatter::CanChat(bool unprompted, bool inCombat) const
         return false;
 
     return true;
+}
+
+void BotChatter::Remember(std::deque<ChatMemoryLine>& memory, std::string_view speaker, std::string_view text)
+{
+    const uint32 size = BotCfg::GetBotOpenAIChatContextSize();
+    if (!size || text.empty() || !BotOpenAI::IsEnabled())
+        return;
+
+    time_t now = GameTime::GetGameTime().count();
+    memory.push_back({ std::string(speaker), std::string(text), now });
+    while (memory.size() > size || (!memory.empty() && memory.front().time + CHATTER_CHAT_LOG_EXPIRE <= now))
+        memory.pop_front();
+}
+
+std::string BotChatter::GetMemoryText(std::deque<ChatMemoryLine> const& memory)
+{
+    time_t now = GameTime::GetGameTime().count();
+    std::ostringstream ss;
+    for (ChatMemoryLine const& line : memory)
+        if (line.time + CHATTER_CHAT_LOG_EXPIRE > now)
+            ss << '[' << line.speaker << "]: " << line.text << '\n';
+    return ss.str();
+}
+
+// the recent messages of every chat the bot is part of
+std::string BotChatter::BuildAIContext(Player const* player) const
+{
+    if (!BotCfg::GetBotOpenAIChatContextSize())
+        return {};
+
+    std::ostringstream ss;
+    auto section = [&ss](char const* name, std::string const& lines) {
+        if (!lines.empty())
+            ss << name << ":\n" << lines;
+    };
+
+    section("/say around you", GetMemoryText(_sayMemory));
+    if (Group const* group = _ai->GetGroup())
+        section("Party/raid chat", GetChatLogContext(GroupChatLogKey(group)));
+    section("General channel", GetChatLogContext(ChannelChatLogKey(_me->GetZoneId(), player->GetTeamId())));
+    section("Whispers", GetMemoryText(_whisperMemory));
+    return ss.str();
 }
 
 bool BotChatter::IsOwnedBy(Player const* player) const
@@ -1398,6 +1444,19 @@ bool BotChatter::SayNearby(ChatterText const& text, WorldObject const* subject, 
     Acore::PlayerDistWorker<Acore::LocalizedPacketDo<TextBuilder>> worker(_me, range, localizer);
     Cell::VisitObjects(_me, worker, range);
     PauseToType(text, subject);
+
+    // the bot itself and the bots around remember it
+    if (BotOpenAI::IsEnabled())
+    {
+        std::string line = GetDefaultText(text, subject);
+        std::list<Creature*> listeners;
+        NearbyBotCheck check(_me, range);
+        Acore::CreatureListSearcher<NearbyBotCheck> searcher(_me, listeners, check);
+        Cell::VisitObjects(_me, searcher, range);
+        for (Creature* bot : listeners)
+            if (bot->GetBotAI())
+                Remember(bot->GetBotAI()->GetChatter()._sayMemory, _me->GetName(), line);
+    }
     return true;
 }
 
@@ -1419,7 +1478,7 @@ bool BotChatter::SayToGroup(ChatterText const& text, WorldObject const* subject,
         member->SendDirectMessage(&data);
     }
 
-    LogChatLine(GroupChatLogKey(group), _me->GetName(), GetDefaultText(text, subject));
+    LogChatLine(GroupChatLogKey(group), _me->GetGUID(), _me->GetName(), GetDefaultText(text, subject));
     PauseToType(text, subject);
     return true;
 }
@@ -1487,7 +1546,7 @@ bool BotChatter::SayToZoneChannel(ChatterText const& text, WorldObject const* su
 
     std::string const defaultText = GetDefaultText(text, subject);
     for (TeamId team : teams)
-        LogChatLine(ChannelChatLogKey(zoneId, team), _me->GetName(), defaultText);
+        LogChatLine(ChannelChatLogKey(zoneId, team), _me->GetGUID(), _me->GetName(), defaultText);
 
     PauseToType(text, subject);
     return true;
@@ -1571,6 +1630,7 @@ bool BotChatter::WhisperTo(ChatterText const& text, Player* player)
     builder(data, player->GetSession()->GetSessionDbLocaleIndex());
     player->SendDirectMessage(&data);
     PauseToType(text, player);
+    Remember(_whisperMemory, "you to " + player->GetName(), GetDefaultText(text, player));
     return true;
 }
 
