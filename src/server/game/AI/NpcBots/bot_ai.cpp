@@ -5993,6 +5993,10 @@ void bot_ai::_updateMountedState()
 //STANDSTATE
 void bot_ai::_updateStandState() const
 {
+    // resting, at a campfire or telling a story: BotActivity keeps the bot seated
+    if (_activity.IsSeated())
+        return;
+
     if (IAmFree())
     {
         if (CanSit() && !IsWanderer())
