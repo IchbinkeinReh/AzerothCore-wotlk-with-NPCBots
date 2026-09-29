@@ -49,8 +49,42 @@ enum BotChatterCategory : uint8
     BOT_CHATTER_LEVEL_UP,
     BOT_CHATTER_WHISPER_REPLY,
     BOT_CHATTER_WHISPER_BUSY,
+    BOT_CHATTER_ZONE_ENTER,
+    BOT_CHATTER_PLAYER_DIED,
+    BOT_CHATTER_PLAYER_LEVELUP,
+    BOT_CHATTER_TIME_MORNING,
+    BOT_CHATTER_TIME_EVENING,
+    BOT_CHATTER_TIME_NIGHT,
+    BOT_CHATTER_WEATHER_RAIN,
+    BOT_CHATTER_WEATHER_SNOW,
+    BOT_CHATTER_WEATHER_STORM,
+    BOT_CHATTER_MOOD_CHEERFUL,
+    BOT_CHATTER_MOOD_GRUMPY,
+    BOT_CHATTER_MOOD_TIRED,
 
     BOT_CHATTER_CATEGORY_END
+};
+
+enum BotMood : uint8
+{
+    BOT_MOOD_NORMAL             = 0,
+    BOT_MOOD_CHEERFUL,
+    BOT_MOOD_GRUMPY,
+    BOT_MOOD_TIRED
+};
+
+// what a player did to a bot, see BotChatter::NoteRelation()
+enum BotRelationEvent : uint8
+{
+    BOT_RELATION_TALK           = 0,
+    BOT_RELATION_FIGHT_TOGETHER,
+    BOT_RELATION_ATTACKED_ME,
+    BOT_RELATION_KILLED_ME,
+    BOT_RELATION_I_KILLED,
+    BOT_RELATION_STORY,
+    BOT_RELATION_HIRED,
+    BOT_RELATION_FRIENDLY_EMOTE,
+    BOT_RELATION_HOSTILE_EMOTE
 };
 
 // where a reply to a player goes: the chat the player used
@@ -73,6 +107,15 @@ public:
 
     void OnKilledUnit(Unit const* victim);
     void OnLevelUp();
+    void OnZoneChanged();
+    void OnDied(Unit const* killer);
+    void OnHired(Player const* owner);
+
+    // mood and relationships to players, kept in memory per bot entry (survive despawns, not restarts)
+    BotMood GetMood() const;
+    bool IsTired() const { return GetMood() == BOT_MOOD_TIRED; }
+    void NoteRelation(Player const* player, BotRelationEvent event);
+    int32 GetAffinity(ObjectGuid player) const;
 
     // a line of a text id in /say (campfire stories), localized for each listener
     bool SayText(uint32 textId, uint8 slot);
@@ -137,6 +180,12 @@ private:
     std::string BuildAIInstructions(Player const* player, BotChatterReplyMode mode) const;
 
     bool TryGreetNearbyPlayer();
+    bool GreetBotNearby();
+    void ObservePlayers();
+    void UpdateSocial();
+    void ChangeMood(int32 delta);
+    BotChatterCategory SelectIdleCategory();
+    std::string GetRelationshipText(Player const* player) const;
     void Chatter(BotChatterCategory category, WorldObject const* subject, bool allowChannel);
 
     bool HasPlayersInRange(float range) const;
@@ -146,7 +195,7 @@ private:
     bool SayToZoneChannel(BotChatterCategory category, WorldObject const* subject, bool ignoreCooldown = false);
     bool SayToZoneChannel(ChatterText const& text, WorldObject const* subject, bool ignoreCooldown);
     bool WhisperTo(ChatterText const& text, Player* player);
-    void PerformEmote(uint32 textEmote, Player* target);
+    void PerformEmote(uint32 textEmote, Unit* target);
     void EndStateEmote();
     void ApplyAIActivity(std::string const& activity, Player const* player);
     // stand still for about as long as typing the message would take
@@ -161,6 +210,17 @@ private:
 
     uint32 _greetTimer;
     uint32 _idleTimer;
+    uint32 _socialTimer;
+
+    // players around: dying, leveling, fighting with or against the bot
+    struct ObservedPlayer
+    {
+        uint8 level;
+        bool alive;
+        bool foughtTogether;
+        bool attackedMe;
+    };
+    std::unordered_map<ObjectGuid, ObservedPlayer> _observed;
 
     // players this bot already greeted (or was greeted by) -> game time of that greeting
     std::unordered_map<ObjectGuid, time_t> _greeted;

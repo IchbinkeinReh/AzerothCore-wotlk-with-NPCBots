@@ -457,7 +457,19 @@ enum BotTexts : uint32
     BOT_TEXT_CHATTER_UNKNOWN_AREA           = 71016, //"somewhere"
     BOT_TEXT_CHATTER_WHISPER_REPLY          = 71017, //"What's up, %target?"
     BOT_TEXT_CHATTER_WHISPER_BUSY           = 71018, //"Busy fighting, talk later!"
-    //71019-71100 reserved for bot chatter texts
+    BOT_TEXT_CHATTER_ZONE_ENTER             = 71019, //"%zone at last."
+    BOT_TEXT_CHATTER_PLAYER_DIED            = 71020, //"Oh no, %target!"
+    BOT_TEXT_CHATTER_PLAYER_LEVELUP         = 71021, //"Congratulations on level %target_level, %target!"
+    BOT_TEXT_CHATTER_TIME_MORNING           = 71022,
+    BOT_TEXT_CHATTER_TIME_EVENING           = 71023,
+    BOT_TEXT_CHATTER_TIME_NIGHT             = 71024,
+    BOT_TEXT_CHATTER_WEATHER_RAIN           = 71025,
+    BOT_TEXT_CHATTER_WEATHER_SNOW           = 71026,
+    BOT_TEXT_CHATTER_WEATHER_STORM          = 71027,
+    BOT_TEXT_CHATTER_MOOD_CHEERFUL          = 71028,
+    BOT_TEXT_CHATTER_MOOD_GRUMPY            = 71029,
+    BOT_TEXT_CHATTER_MOOD_TIRED             = 71030,
+    //71031-71100 reserved for bot chatter texts
     //71101-71200 campfire stories: lines 71101+2k, listener reactions 71102+2k, see botactivity.h
 };
 

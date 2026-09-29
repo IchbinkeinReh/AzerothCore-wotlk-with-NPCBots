@@ -79,6 +79,10 @@ public:
     [[nodiscard]] uint32 GetZone() const { return m_zone; };
     [[nodiscard]] uint32 GetScriptId() const { return m_weatherChances->ScriptId; }
 
+    //npcbot: bots talk about the weather
+    [[nodiscard]] WeatherState GetStateForBots() const { return GetWeatherState(); }
+    //end npcbot
+
 private:
     [[nodiscard]] WeatherState GetWeatherState() const;
     Map* m_map;

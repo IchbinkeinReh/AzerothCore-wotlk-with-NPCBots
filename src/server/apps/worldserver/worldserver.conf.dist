@@ -5833,6 +5833,16 @@ NpcBot.Chatter.Reply.Chance = 50
 NpcBot.Chatter.Event.Chance = 25
 
 #
+#    NpcBot.Chatter.Environment.Chance
+#        Description: Chance (%) for a bot to comment on a player nearby dying or leveling up, half of it
+#                     for entering a new zone. Idle talk also covers weather, time of day and the bot's
+#                     mood (cheerful, grumpy, tired). Bots remember how players treated them (talks,
+#                     fights side by side, attacks, emotes, hiring), in memory until a restart.
+#        Default:     40
+
+NpcBot.Chatter.Environment.Chance = 40
+
+#
 #    NpcBot.Chatter.Locale
 #        Description: Language bots talk in: built-in texts, campfire stories and OpenAI answers, whatever
 #                     language the client or the player's message has (emote texts are built by the client).

@@ -176,6 +176,7 @@ static uint32 _chatterGreetChance;
 static uint32 _chatterGreetCooldown;
 static uint32 _chatterReplyChance;
 static uint32 _chatterEventChance;
+static uint32 _chatterEnvironmentChance;
 static float _botStatLimits_dodge;
 static float _botStatLimits_parry;
 static float _botStatLimits_block;
@@ -541,6 +542,7 @@ private:
         _chatterGreetCooldown           = sConfigMgr->GetIntDefault("NpcBot.Chatter.Greet.Cooldown", 900);
         _chatterReplyChance             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Reply.Chance", 50);
         _chatterEventChance             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Event.Chance", 25);
+        _chatterEnvironmentChance       = sConfigMgr->GetIntDefault("NpcBot.Chatter.Environment.Chance", 40);
         _chatterLocale                  = sConfigMgr->GetStringDefault("NpcBot.Chatter.Locale", "");
 
         if (reload)
@@ -758,6 +760,7 @@ private:
         RoundToInterval(_chatterGreetChance, uint32(0), uint32(100));
         RoundToInterval(_chatterReplyChance, uint32(0), uint32(100));
         RoundToInterval(_chatterEventChance, uint32(0), uint32(100));
+        RoundToInterval(_chatterEnvironmentChance, uint32(0), uint32(100));
         RoundToInterval(_guildsChance, uint32(0), uint32(100));
         RoundToInterval(_activitiesIntervalMin, uint32(10), uint32(DAY));
         RoundToInterval(_activitiesIntervalMax, _activitiesIntervalMin, uint32(DAY));
@@ -1478,6 +1481,10 @@ uint32 BotCfg::GetBotChatterReplyChance()
 uint32 BotCfg::GetBotChatterEventChance()
 {
     return _chatterEventChance;
+}
+uint32 BotCfg::GetBotChatterEnvironmentChance()
+{
+    return _chatterEnvironmentChance;
 }
 
 uint32 BotCfg::GetBotDungeonMaxItemLevel(uint8 level, uint16 map_id, Difficulty map_difficulty)

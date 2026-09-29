@@ -20,7 +20,9 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Tokenize.h"
+#include "Timer.h"
 #include "Util.h"
+#include "Weather.h"
 #include "World.h"
 #include "WorldSession.h"
 
@@ -29,6 +31,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 
 /*
 NpcBot Chatter, see botchatter.h
@@ -63,6 +66,18 @@ namespace
         { BOT_TEXT_CHATTER_LEVEL_UP,        BOT_TEXT_CHATTER_LEVEL_UP       }, // BOT_CHATTER_LEVEL_UP
         { BOT_TEXT_CHATTER_WHISPER_REPLY,   BOT_TEXT_CHATTER_WHISPER_REPLY  }, // BOT_CHATTER_WHISPER_REPLY
         { BOT_TEXT_CHATTER_WHISPER_BUSY,    BOT_TEXT_CHATTER_WHISPER_BUSY   }, // BOT_CHATTER_WHISPER_BUSY
+        { BOT_TEXT_CHATTER_ZONE_ENTER,      BOT_TEXT_CHATTER_ZONE_ENTER     }, // BOT_CHATTER_ZONE_ENTER
+        { BOT_TEXT_CHATTER_PLAYER_DIED,     BOT_TEXT_CHATTER_PLAYER_DIED    }, // BOT_CHATTER_PLAYER_DIED
+        { BOT_TEXT_CHATTER_PLAYER_LEVELUP,  BOT_TEXT_CHATTER_PLAYER_LEVELUP }, // BOT_CHATTER_PLAYER_LEVELUP
+        { BOT_TEXT_CHATTER_TIME_MORNING,    BOT_TEXT_CHATTER_TIME_MORNING   }, // BOT_CHATTER_TIME_MORNING
+        { BOT_TEXT_CHATTER_TIME_EVENING,    BOT_TEXT_CHATTER_TIME_EVENING   }, // BOT_CHATTER_TIME_EVENING
+        { BOT_TEXT_CHATTER_TIME_NIGHT,      BOT_TEXT_CHATTER_TIME_NIGHT     }, // BOT_CHATTER_TIME_NIGHT
+        { BOT_TEXT_CHATTER_WEATHER_RAIN,    BOT_TEXT_CHATTER_WEATHER_RAIN   }, // BOT_CHATTER_WEATHER_RAIN
+        { BOT_TEXT_CHATTER_WEATHER_SNOW,    BOT_TEXT_CHATTER_WEATHER_SNOW   }, // BOT_CHATTER_WEATHER_SNOW
+        { BOT_TEXT_CHATTER_WEATHER_STORM,   BOT_TEXT_CHATTER_WEATHER_STORM  }, // BOT_CHATTER_WEATHER_STORM
+        { BOT_TEXT_CHATTER_MOOD_CHEERFUL,   BOT_TEXT_CHATTER_MOOD_CHEERFUL  }, // BOT_CHATTER_MOOD_CHEERFUL
+        { BOT_TEXT_CHATTER_MOOD_GRUMPY,     BOT_TEXT_CHATTER_MOOD_GRUMPY    }, // BOT_CHATTER_MOOD_GRUMPY
+        { BOT_TEXT_CHATTER_MOOD_TIRED,      BOT_TEXT_CHATTER_MOOD_TIRED     }, // BOT_CHATTER_MOOD_TIRED
     }};
 
     std::array<std::atomic<bool>, BOT_CHATTER_CATEGORY_END> MissingTextsReported{};
@@ -208,6 +223,66 @@ namespace
     }
 
     constexpr std::size_t CHATTER_AI_MAX_TEXT_LENGTH = 240;
+
+    // mood and relationships to players per bot entry, kept in memory only: they survive the bot being despawned
+    // and spawned again, not a server restart. World and map threads
+    struct Relationship
+    {
+        std::string name;
+        int32 affinity = 0;
+        uint32 talks = 0;
+        uint32 fights = 0;
+        uint32 attacks = 0;
+        uint32 killedMe = 0;
+        uint32 killedThem = 0;
+        uint32 stories = 0;
+        uint32 friendly = 0;
+        uint32 hostile = 0;
+        bool hired = false;
+        time_t lastSeen = 0;
+    };
+
+    struct SocialState
+    {
+        int32 mood = 0;
+        uint32 activeMinutes = 0;
+        std::unordered_map<ObjectGuid, Relationship> relations;
+    };
+
+    constexpr int32 MOOD_LIMIT = 10;
+    constexpr int32 MOOD_THRESHOLD = 4;
+    constexpr int32 AFFINITY_LIMIT = 20;
+    constexpr int32 AFFINITY_LIKE = 6;
+    constexpr uint32 TIRED_MINUTES = 45;
+    constexpr std::size_t MAX_RELATIONSHIPS = 50;
+
+    std::mutex SocialLock;
+    std::unordered_map<uint32 /*entry*/, SocialState> SocialStates;
+
+    bool IsFriendlyEmote(uint32 textEmote)
+    {
+        switch (textEmote)
+        {
+            case TEXT_EMOTE_HUG: case TEXT_EMOTE_KISS: case TEXT_EMOTE_THANK: case TEXT_EMOTE_APPLAUD:
+            case TEXT_EMOTE_BOW: case TEXT_EMOTE_CHEER: case TEXT_EMOTE_GREET: case TEXT_EMOTE_HELLO:
+            case TEXT_EMOTE_SALUTE: case TEXT_EMOTE_LOVE: case TEXT_EMOTE_FLIRT: case TEXT_EMOTE_CONGRATULATE:
+            case TEXT_EMOTE_SMILE: case TEXT_EMOTE_WINK:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool IsHostileEmote(uint32 textEmote)
+    {
+        switch (textEmote)
+        {
+            case TEXT_EMOTE_RUDE: case TEXT_EMOTE_CHICKEN: case TEXT_EMOTE_THREATEN: case TEXT_EMOTE_ANGRY:
+                return true;
+            default:
+                return false;
+        }
+    }
 
     // world and map threads (emotes)
     std::mutex AIPlayerCooldownsLock;
@@ -523,7 +598,7 @@ namespace
 }
 
 BotChatter::BotChatter(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot),
-    _greetTimer(urand(2000, 5000)), _idleTimer(urand(30000, 90000)),
+    _greetTimer(urand(2000, 5000)), _idleTimer(urand(30000, 90000)), _socialTimer(MINUTE * IN_MILLISECONDS),
     _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0), _aiPendingUntil(0),
     _stateEmote(0), _stateEmoteTimer(0), _emoteReaction(0), _emoteTimer(0)
 {
@@ -597,8 +672,18 @@ void BotChatter::Update(uint32 diff)
     else
     {
         _greetTimer = urand(2000, 4000);
-        if (CanChat(true))
-            TryGreetNearbyPlayer();
+        if (_me->IsInWorld() && _me->IsAlive() && _me->GetMap()->HavePlayers())
+            ObservePlayers();
+        if (CanChat(true) && !TryGreetNearbyPlayer())
+            GreetBotNearby();
+    }
+
+    if (_socialTimer > diff)
+        _socialTimer -= diff;
+    else
+    {
+        _socialTimer = MINUTE * IN_MILLISECONDS;
+        UpdateSocial();
     }
 
     if (_idleTimer > diff)
@@ -608,12 +693,17 @@ void BotChatter::Update(uint32 diff)
         uint32 interval = urand(BotCfg::GetBotChatterIdleIntervalMin(), BotCfg::GetBotChatterIdleIntervalMax());
         _idleTimer = interval * IN_MILLISECONDS;
         if (CanChat(true) && roll_chance_i(BotCfg::GetBotChatterIdleChance()))
-            Chatter(BOT_CHATTER_IDLE, nullptr, true);
+            Chatter(SelectIdleCategory(), nullptr, true);
     }
 }
 
 void BotChatter::OnKilledUnit(Unit const* victim)
 {
+    if (roll_chance_i(30))
+        ChangeMood(1);
+    if (Player const* player = victim->ToPlayer())
+        NoteRelation(player, BOT_RELATION_I_KILLED);
+
     if (!CanChat(true, true))
         return;
 
@@ -679,6 +769,7 @@ void BotChatter::DoTextEmote(uint32 textEmote)
 
 void BotChatter::OnLevelUp()
 {
+    ChangeMood(3);
     if (CanChat(true, true) && roll_chance_i(BotCfg::GetBotChatterEventChance()))
         Chatter(BOT_CHATTER_LEVEL_UP, nullptr, true);
 }
@@ -878,6 +969,17 @@ void BotChatter::OnPlayerTextEmote(Player* player, uint32 textEmote, Unit const*
 
 void BotChatter::ReactToEmote(Player* player, uint32 textEmote, bool atMe)
 {
+    if (atMe && IsFriendlyEmote(textEmote))
+    {
+        NoteRelation(player, BOT_RELATION_FRIENDLY_EMOTE);
+        ChangeMood(1);
+    }
+    else if (atMe && IsHostileEmote(textEmote))
+    {
+        NoteRelation(player, BOT_RELATION_HOSTILE_EMOTE);
+        ChangeMood(-1);
+    }
+
     // OpenAI gets the emote as a message and may answer with words, an emote or both
     if (BotOpenAI::IsEnabled())
     {
@@ -1037,6 +1139,8 @@ bool BotChatter::RequestAIReply(Player const* player, std::string_view message, 
     if (!BotOpenAI::Enqueue(std::move(request)))
         return false;
 
+    NoteRelation(player, BOT_RELATION_TALK);
+
     {
         std::lock_guard<std::mutex> lock(AIPlayerCooldownsLock);
         std::erase_if(AIPlayerCooldowns, [now](auto const& entry) { return entry.second <= now; });
@@ -1110,8 +1214,8 @@ void BotChatter::ApplyAIActivity(std::string const& activity, Player const* play
         botActivity.Stop();
     else if (activity == "rest")
         botActivity.RequestRest(player);
-    else if (activity == "story" && player)
-        botActivity.StartStoryWith(player);
+    else if (activity == "story" && player && botActivity.StartStoryWith(player))
+        NoteRelation(player, BOT_RELATION_STORY);
 }
 
 bool BotChatter::RequestStoryStep(Player const* player)
@@ -1166,6 +1270,9 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
     if (_ai->IAmFree())
         ss << (_ai->IsWanderer() ? "You are an adventurer travelling the world on your own. " :
             "You are a mercenary waiting to be hired. ");
+    else if (Player const* owner = _ai->GetBotOwner())
+        ss << "You are a hired companion of " << owner->GetName()
+            << (owner == player ? ", the one talking to you" : "") << ". ";
 
     if (_ai->GetActivity().IsResting())
         ss << "Right now you are resting, sitting on the ground. ";
@@ -1173,9 +1280,16 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
         ss << "Right now you sit with other adventurers around a campfire, telling each other stories. ";
     else if (_ai->GetActivity().IsTellingStory())
         ss << "Right now you sit at a campfire, telling a story. ";
-    else if (Player const* owner = _ai->GetBotOwner())
-        ss << "You are a hired companion of " << owner->GetName()
-            << (owner == player ? ", the one talking to you" : "") << ". ";
+
+    switch (GetMood())
+    {
+        case BOT_MOOD_CHEERFUL: ss << "You are in a cheerful mood. ";            break;
+        case BOT_MOOD_GRUMPY:   ss << "You are in a grumpy mood. ";              break;
+        case BOT_MOOD_TIRED:    ss << "You are tired from a long day of travel. "; break;
+        default:                                                                  break;
+    }
+
+    ss << GetRelationshipText(player);
 
     ss << player->GetName() << ", a level " << uint32(player->GetLevel()) << ' '
         << GetEnglishRaceName(player->GetRace()) << ' ' << GetEnglishClassName(player->GetClass()) << ", talks to you ";
@@ -1301,6 +1415,7 @@ void BotChatter::QueueReply(Player const* player, BotChatterCategory category, B
     _replyCategory = category;
     _replyMode = mode;
     _replyTimer = delay;
+    NoteRelation(player, BOT_RELATION_TALK);
 
     // already talked to each other, no need to greet them on our own
     if (category == BOT_CHATTER_GREET_REPLY)
@@ -1392,6 +1507,33 @@ bool BotChatter::TryGreetNearbyPlayer()
         if (!roll_chance_i(BotCfg::GetBotChatterGreetChance()))
             continue;
 
+        // players the bot dislikes get a rude gesture
+        int32 affinity = GetAffinity(player->GetGUID());
+        if (affinity <= -AFFINITY_LIKE)
+        {
+            PerformEmote(TEXT_EMOTE_RUDE, player);
+            return true;
+        }
+
+        // mostly just a wave or a nod in passing, fitting the mood
+        if (roll_chance_i(60))
+        {
+            std::vector<uint32> emotes;
+            if (affinity >= AFFINITY_LIKE)
+                emotes = { TEXT_EMOTE_WAVE, TEXT_EMOTE_HELLO, TEXT_EMOTE_SMILE };
+            else switch (GetMood())
+            {
+                case BOT_MOOD_CHEERFUL: emotes = { TEXT_EMOTE_WAVE, TEXT_EMOTE_HELLO, TEXT_EMOTE_SMILE }; break;
+                case BOT_MOOD_GRUMPY:
+                case BOT_MOOD_TIRED:    emotes = { TEXT_EMOTE_NOD };                                      break;
+                default:
+                    emotes = { TEXT_EMOTE_WAVE, TEXT_EMOTE_NOD, TEXT_EMOTE_SALUTE, TEXT_EMOTE_BOW };
+                    break;
+            }
+            PerformEmote(Acore::Containers::SelectRandomContainerElement(emotes), player);
+            return true;
+        }
+
         if (!_me->isMoving())
         {
             _me->SetFacingToObject(player);
@@ -1402,6 +1544,276 @@ bool BotChatter::TryGreetNearbyPlayer()
     }
 
     return false;
+}
+
+// bots passing each other nod or wave
+bool BotChatter::GreetBotNearby()
+{
+    if (!roll_chance_i(20) || !HasPlayersInRange(sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_TEXTEMOTE)))
+        return false;
+
+    time_t now = GameTime::GetGameTime().count();
+    std::list<Creature*> bots;
+    NearbyBotCheck check(_me, 10.0f);
+    Acore::CreatureListSearcher<NearbyBotCheck> searcher(_me, bots, check);
+    Cell::VisitObjects(_me, searcher, 10.0f);
+
+    for (Creature* bot : bots)
+    {
+        if (bot == _me || _greeted.contains(bot->GetGUID()) || _me->IsHostileTo(bot) || bot->IsInCombat())
+            continue;
+
+        _greeted[bot->GetGUID()] = now;
+        static constexpr std::array greetings{ TEXT_EMOTE_NOD, TEXT_EMOTE_WAVE, TEXT_EMOTE_SALUTE };
+        PerformEmote(Acore::Containers::SelectRandomContainerElement(greetings), bot);
+        return true;
+    }
+
+    return false;
+}
+
+// players around dying, leveling up, fighting with or against the bot
+void BotChatter::ObservePlayers()
+{
+    float range = sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_SAY);
+    std::list<Player*> players;
+    Acore::AnyPlayerInObjectRangeCheck check(_me, range, false, true);
+    Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(_me, players, check);
+    Cell::VisitObjects(_me, searcher, range);
+
+    const int32 chance = BotCfg::GetBotChatterEnvironmentChance();
+    Unit const* victim = _me->IsInCombat() ? _me->GetVictim() : nullptr;
+
+    std::unordered_set<ObjectGuid> seen;
+    for (Player* player : players)
+    {
+        seen.insert(player->GetGUID());
+        auto [itr, inserted] = _observed.try_emplace(player->GetGUID(),
+            ObservedPlayer{ player->GetLevel(), player->IsAlive(), false, false });
+        ObservedPlayer& observed = itr->second;
+
+        if (!inserted)
+        {
+            if (observed.alive && !player->IsAlive() && CanChat(true, true) && roll_chance_i(chance))
+            {
+                if (!_me->IsHostileTo(player))
+                    SayNearby(BOT_CHATTER_PLAYER_DIED, player, CHAT_MSG_MONSTER_SAY);
+            }
+            else if (player->GetLevel() > observed.level && player->IsAlive() && !_me->IsHostileTo(player) &&
+                CanChat(true, true) && roll_chance_i(chance))
+            {
+                PerformEmote(TEXT_EMOTE_CONGRATULATE, player);
+                SayNearby(BOT_CHATTER_PLAYER_LEVELUP, player, CHAT_MSG_MONSTER_SAY);
+            }
+        }
+
+        observed.level = player->GetLevel();
+        observed.alive = player->IsAlive();
+
+        if (!_me->IsInCombat())
+        {
+            observed.foughtTogether = false;
+            observed.attackedMe = false;
+            continue;
+        }
+
+        if (!observed.foughtTogether && victim && !victim->IsPlayer() && player->GetVictim() == victim)
+        {
+            observed.foughtTogether = true;
+            NoteRelation(player, BOT_RELATION_FIGHT_TOGETHER);
+        }
+        if (!observed.attackedMe && player->GetVictim() == _me)
+        {
+            observed.attackedMe = true;
+            NoteRelation(player, BOT_RELATION_ATTACKED_ME);
+            ChangeMood(-2);
+        }
+    }
+
+    std::erase_if(_observed, [&seen](auto const& entry) { return !seen.contains(entry.first); });
+}
+
+// idle talk about the weather, the time of day or the bot's mood now and then
+BotChatterCategory BotChatter::SelectIdleCategory()
+{
+    switch (GetMood())
+    {
+        case BOT_MOOD_CHEERFUL: if (roll_chance_i(40)) return BOT_CHATTER_MOOD_CHEERFUL; break;
+        case BOT_MOOD_GRUMPY:   if (roll_chance_i(40)) return BOT_CHATTER_MOOD_GRUMPY;   break;
+        case BOT_MOOD_TIRED:    if (roll_chance_i(40)) return BOT_CHATTER_MOOD_TIRED;    break;
+        default:                                                                          break;
+    }
+
+    if (!roll_chance_i(35))
+        return BOT_CHATTER_IDLE;
+
+    if (_me->IsOutdoors())
+    {
+        if (Weather* weather = _me->GetMap()->GetOrGenerateZoneDefaultWeather(_me->GetZoneId()))
+        {
+            switch (weather->GetStateForBots())
+            {
+                case WEATHER_STATE_LIGHT_RAIN: case WEATHER_STATE_MEDIUM_RAIN: case WEATHER_STATE_HEAVY_RAIN:
+                case WEATHER_STATE_BLACKRAIN:
+                    return BOT_CHATTER_WEATHER_RAIN;
+                case WEATHER_STATE_LIGHT_SNOW: case WEATHER_STATE_MEDIUM_SNOW: case WEATHER_STATE_HEAVY_SNOW:
+                case WEATHER_STATE_BLACKSNOW:
+                    return BOT_CHATTER_WEATHER_SNOW;
+                case WEATHER_STATE_LIGHT_SANDSTORM: case WEATHER_STATE_MEDIUM_SANDSTORM:
+                case WEATHER_STATE_HEAVY_SANDSTORM: case WEATHER_STATE_THUNDERS:
+                    return BOT_CHATTER_WEATHER_STORM;
+                default:
+                    break;
+            }
+        }
+    }
+
+    int32 hour = Acore::Time::TimeBreakdown(GameTime::GetGameTime().count()).tm_hour;
+    if (hour >= 5 && hour < 10)
+        return BOT_CHATTER_TIME_MORNING;
+    if (hour >= 18 && hour < 22)
+        return BOT_CHATTER_TIME_EVENING;
+    if (hour >= 22 || hour < 4)
+        return BOT_CHATTER_TIME_NIGHT;
+    return BOT_CHATTER_IDLE;
+}
+
+void BotChatter::OnZoneChanged()
+{
+    if (CanChat(true) && roll_chance_i(BotCfg::GetBotChatterEnvironmentChance() / 2))
+        Chatter(BOT_CHATTER_ZONE_ENTER, nullptr, false);
+}
+
+void BotChatter::OnDied(Unit const* killer)
+{
+    ChangeMood(-4);
+    if (Player const* player = killer ? killer->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr)
+        NoteRelation(player, BOT_RELATION_KILLED_ME);
+}
+
+void BotChatter::OnHired(Player const* owner)
+{
+    ChangeMood(3);
+    NoteRelation(owner, BOT_RELATION_HIRED);
+}
+
+void BotChatter::ChangeMood(int32 delta)
+{
+    std::lock_guard<std::mutex> lock(SocialLock);
+    SocialState& state = SocialStates[_me->GetEntry()];
+    state.mood = std::clamp(state.mood + delta, -MOOD_LIMIT, MOOD_LIMIT);
+}
+
+BotMood BotChatter::GetMood() const
+{
+    std::lock_guard<std::mutex> lock(SocialLock);
+    auto itr = SocialStates.find(_me->GetEntry());
+    if (itr == SocialStates.end())
+        return BOT_MOOD_NORMAL;
+    if (itr->second.activeMinutes >= TIRED_MINUTES)
+        return BOT_MOOD_TIRED;
+    if (itr->second.mood >= MOOD_THRESHOLD)
+        return BOT_MOOD_CHEERFUL;
+    if (itr->second.mood <= -MOOD_THRESHOLD)
+        return BOT_MOOD_GRUMPY;
+    return BOT_MOOD_NORMAL;
+}
+
+// every minute: the mood fades, being on the move makes tired, sitting down rests
+void BotChatter::UpdateSocial()
+{
+    std::lock_guard<std::mutex> lock(SocialLock);
+    SocialState& state = SocialStates[_me->GetEntry()];
+    if (roll_chance_i(20))
+        state.mood += state.mood > 0 ? -1 : state.mood < 0 ? 1 : 0;
+
+    if (_ai->GetActivity().IsSeated())
+        state.activeMinutes = 0;
+    else if (_me->IsInWorld() && _me->IsAlive())
+        ++state.activeMinutes;
+}
+
+void BotChatter::NoteRelation(Player const* player, BotRelationEvent event)
+{
+    if (!player)
+        return;
+
+    std::lock_guard<std::mutex> lock(SocialLock);
+    SocialState& state = SocialStates[_me->GetEntry()];
+    Relationship& relation = state.relations[player->GetGUID()];
+    relation.name = player->GetName();
+    relation.lastSeen = GameTime::GetGameTime().count();
+
+    int32 delta = 0;
+    switch (event)
+    {
+        case BOT_RELATION_TALK:           delta = (++relation.talks % 3) == 0 ? 1 : 0; break;
+        case BOT_RELATION_FIGHT_TOGETHER: ++relation.fights;     delta = 3;           break;
+        case BOT_RELATION_ATTACKED_ME:    ++relation.attacks;    delta = -5;          break;
+        case BOT_RELATION_KILLED_ME:      ++relation.killedMe;   delta = -10;         break;
+        case BOT_RELATION_I_KILLED:       ++relation.killedThem; delta = -2;          break;
+        case BOT_RELATION_STORY:          ++relation.stories;    delta = 2;           break;
+        case BOT_RELATION_HIRED:          relation.hired = true; delta = 5;           break;
+        case BOT_RELATION_FRIENDLY_EMOTE: ++relation.friendly;   delta = 1;           break;
+        case BOT_RELATION_HOSTILE_EMOTE:  ++relation.hostile;    delta = -2;          break;
+    }
+    relation.affinity = std::clamp(relation.affinity + delta, -AFFINITY_LIMIT, AFFINITY_LIMIT);
+
+    // forget the one not seen for the longest time
+    if (state.relations.size() > MAX_RELATIONSHIPS)
+    {
+        auto oldest = std::ranges::min_element(state.relations, {},
+            [](auto const& entry) { return entry.second.lastSeen; });
+        state.relations.erase(oldest);
+    }
+}
+
+int32 BotChatter::GetAffinity(ObjectGuid player) const
+{
+    std::lock_guard<std::mutex> lock(SocialLock);
+    auto itr = SocialStates.find(_me->GetEntry());
+    if (itr == SocialStates.end())
+        return 0;
+    auto relation = itr->second.relations.find(player);
+    return relation != itr->second.relations.end() ? relation->second.affinity : 0;
+}
+
+std::string BotChatter::GetRelationshipText(Player const* player) const
+{
+    std::string const& name = player->GetName();
+
+    std::lock_guard<std::mutex> lock(SocialLock);
+    auto itr = SocialStates.find(_me->GetEntry());
+    if (itr == SocialStates.end())
+        return "You never met " + name + " before. ";
+    auto relation = itr->second.relations.find(player->GetGUID());
+    if (relation == itr->second.relations.end())
+        return "You never met " + name + " before. ";
+
+    Relationship const& r = relation->second;
+    std::ostringstream ss;
+    ss << "What you know about " << name << ":";
+    if (r.hired)
+        ss << " " << name << " hired you.";
+    if (r.talks)
+        ss << " You talked " << r.talks << " times.";
+    if (r.fights)
+        ss << " " << name << " fought at your side " << r.fights << " times.";
+    if (r.attacks)
+        ss << " " << name << " attacked you " << r.attacks << " times.";
+    if (r.killedMe)
+        ss << " " << name << " killed you " << r.killedMe << " times.";
+    if (r.killedThem)
+        ss << " You defeated " << name << " " << r.killedThem << " times.";
+    if (r.stories)
+        ss << " You told " << name << " a story.";
+    if (r.friendly)
+        ss << " " << name << " was friendly to you.";
+    if (r.hostile)
+        ss << " " << name << " was rude to you.";
+    ss << (r.affinity >= AFFINITY_LIKE ? " You like " + name + "." :
+        r.affinity <= -AFFINITY_LIKE ? " You dislike " + name + "." : " You feel neutral about " + name + ".") << ' ';
+    return ss.str();
 }
 
 void BotChatter::Chatter(BotChatterCategory category, WorldObject const* subject, bool allowChannel)
@@ -1553,7 +1965,7 @@ bool BotChatter::SayToZoneChannel(ChatterText const& text, WorldObject const* su
 }
 
 // text emote with its animation, seen by players around the bot
-void BotChatter::PerformEmote(uint32 textEmote, Player* target)
+void BotChatter::PerformEmote(uint32 textEmote, Unit* target)
 {
     EmotesTextEntry const* emote = sEmotesTextStore.LookupEntry(textEmote);
     if (!emote || !_me->IsInWorld() || !_me->IsAlive())

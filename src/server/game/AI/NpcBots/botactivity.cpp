@@ -150,6 +150,9 @@ void BotActivity::ChooseActivity()
     uint32 roll = urand(0, 99);
     uint32 roleplayChance = BotCfg::GetBotActivitiesRoleplayChance();
     uint32 restChance = BotCfg::GetBotActivitiesRestChance();
+    // tired bots rather sit down
+    if (_ai->GetChatter().IsTired())
+        restChance = std::min<uint32>(restChance * 3, 100 - roleplayChance);
 
     if (roll < roleplayChance)
     {

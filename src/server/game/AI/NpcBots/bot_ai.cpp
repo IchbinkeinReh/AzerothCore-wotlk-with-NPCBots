@@ -304,6 +304,8 @@ bool bot_ai::SetBotOwner(Player* newowner, bool chargeHireCost)
         return false;
     }
 
+    _chatter.OnHired(newowner);
+
     spawned = false;
 
     (const_cast<CreatureTemplate*>(me->GetCreatureTemplate()))->unit_flags2 &= ~(UNIT_FLAG2_ALLOW_ENEMY_INTERACT);
@@ -7290,7 +7292,10 @@ void bot_ai::_OnZoneUpdate(uint32 zoneId, uint32 areaId)
 {
     ASSERT(me->IsInWorld());
 
+    const uint32 oldZoneId = _lastZoneId;
     _lastZoneId = zoneId;
+    if (oldZoneId && oldZoneId != zoneId)
+        _chatter.OnZoneChanged();
 
     SetGroupUpdateFlag(GROUP_UPDATE_FULL);
 
@@ -15866,6 +15871,8 @@ void bot_ai::JustExitedCombat()
 //killer may be NULL
 void bot_ai::JustDied(Unit* u)
 {
+    _chatter.OnDied(u);
+
     AbortTeleport();
     AbortAwaitStateRemoval();
     KillEvents(false);
