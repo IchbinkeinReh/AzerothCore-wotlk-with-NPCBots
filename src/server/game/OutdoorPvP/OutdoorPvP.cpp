@@ -27,6 +27,10 @@
 #include "WorldPacket.h"
 #include "World.h"
 
+//npcbot
+#include "botworldevents.h"
+//end npcbot
+
 OPvPCapturePoint::OPvPCapturePoint(OutdoorPvP* pvp) :
     _pvp(pvp)
 {
@@ -351,6 +355,12 @@ bool OPvPCapturePoint::Update(uint32 diff)
 
     // get the difference of numbers
     float factDiff = (((float)_activePlayers[0].size() - (float)_activePlayers[1].size()) * float(diff) / OUTDOORPVP_OBJECTIVE_UPDATE_INTERVAL) * sWorld->getFloatConfig(CONFIG_OUTDOOR_PVP_CAPTURE_RATE);
+
+    //npcbot: free wandering bots fight for the objectives on their own and count like players
+    factDiff += BotWorldEvents::GetCapturePointBotBalance(_capturePoint, radius) * float(diff) /
+        OUTDOORPVP_OBJECTIVE_UPDATE_INTERVAL * sWorld->getFloatConfig(CONFIG_OUTDOOR_PVP_CAPTURE_RATE);
+    //end npcbot
+
     if (factDiff == 0.f)
         return false;
 

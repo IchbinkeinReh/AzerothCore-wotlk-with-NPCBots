@@ -494,7 +494,39 @@ enum BotTexts : uint32
     BOT_TEXT_EVENT_KEYWORDS_YES             = 71052, //keywords accepting an offer, '|' separated
     BOT_TEXT_EVENT_KEYWORDS_NO              = 71053, //keywords declining an offer, '|' separated
     BOT_TEXT_EVENT_OFFER_GONE               = 71054, //whisper: "Sorry, plans changed."
-    //71055-71100 reserved for bot chatter texts
+    // recognition and relationships between bots, see botchatter.h
+    BOT_TEXT_CHATTER_RECOGNIZE_FRIEND       = 71055, //say: "Hey %target! Good to see you again!"
+    BOT_TEXT_CHATTER_RECOGNIZE_FOE          = 71056, //say: "Oh. It's you, %target."
+    BOT_TEXT_BOND_FRIEND_GREET              = 71057, //say: "%target! My old friend!"
+    BOT_TEXT_BOND_TRAVEL                    = 71058, //say: "Let us travel together for a while, %target."
+    BOT_TEXT_BOND_RIVAL_TAUNT               = 71059, //say: "You again, %target?"
+    BOT_TEXT_BOND_RIVAL_REPLY               = 71060, //say: "Mind your own business, %target."
+    BOT_TEXT_BOND_RIVAL_CHANNEL             = 71061, //General: "Has anyone seen %rival?"
+    BOT_TEXT_BOND_TRAVEL_END                = 71062, //say: "I go my own way now. See you, %target!"
+    // trade channel, see botworldevents.h
+    BOT_TEXT_TRADE_WTS                      = 71063, //Trade: "WTS %item for %price"
+    BOT_TEXT_TRADE_WTB                      = 71064, //Trade: "WTB %count x %item, %price each"
+    BOT_TEXT_TRADE_SOLD                     = 71065, //whisper: "Pleasure doing business! %item is yours."
+    BOT_TEXT_TRADE_BOUGHT                   = 71066, //whisper: "Thanks! Here are %price."
+    BOT_TEXT_TRADE_NO_MONEY                 = 71067, //whisper: "That is not enough gold."
+    BOT_TEXT_TRADE_BAGS_FULL                = 71068, //whisper: "Your bags are full."
+    BOT_TEXT_TRADE_NO_ITEMS                 = 71069, //whisper: "You do not have %count x %item."
+    BOT_TEXT_TRADE_KEYWORDS                 = 71070, //keywords taking a trade offer, '|' separated
+    BOT_TEXT_TRADE_GONE                     = 71071, //whisper: "Sorry, already gone."
+    // invasions and world pvp objectives, see botworldevents.h
+    BOT_TEXT_INVASION_CALL                  = 71072, //yell: "To arms! %enemy attack %town!"
+    BOT_TEXT_INVASION_CHANNEL               = 71073, //General: "%enemy attack %town!"
+    BOT_TEXT_INVASION_WAVE                  = 71074, //yell: "More of them are coming!"
+    BOT_TEXT_INVASION_VICTORY               = 71075, //yell: "%town is safe!"
+    BOT_TEXT_INVASION_FAILED                = 71076, //yell: "We could not hold them..."
+    BOT_TEXT_OBJECTIVE_CALL                 = 71077, //say: "Let us take %objective!"
+    BOT_TEXT_OBJECTIVE_CHANNEL              = 71078, //General: "Heading to %objective, help us!"
+    BOT_TEXT_OBJECTIVE_TAKEN                = 71079, //yell: "%objective is ours!"
+    BOT_TEXT_OBJECTIVE_FAILED               = 71080, //say: "We could not take %objective."
+    BOT_TEXT_INVADERS_SCOURGE               = 71081, //"The Scourge"
+    BOT_TEXT_INVADERS_LEGION                = 71082, //"The Burning Legion"
+    BOT_TEXT_INVADERS_RAIDERS               = 71083, //"Raiders"
+    //71084-71100 reserved for bot chatter texts
     //71101-71200 campfire stories: lines 71101+2k, listener reactions 71102+2k, see botactivity.h
 };
 

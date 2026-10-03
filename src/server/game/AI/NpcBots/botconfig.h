@@ -130,6 +130,14 @@ public:
     static bool IsBotRaidOffersEnabled();
     static uint32 GetBotRaidOffersInterval();
     static uint32 GetBotRaidOffersSize();
+    static bool IsBotBondsEnabled();
+    static bool IsBotTradeEnabled();
+    static uint32 GetBotTradeInterval();
+    static bool IsBotInvasionsEnabled();
+    static uint32 GetBotInvasionsInterval();
+    static uint32 GetBotInvasionsWaves();
+    static bool IsBotObjectivesEnabled();
+    static uint32 GetBotObjectivesInterval();
     static bool IsBotGuildsEnabled();
     static std::string const& GetBotChatterLocale();
     static bool IsBotOpenAIEnabled();

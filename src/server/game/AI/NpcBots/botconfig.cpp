@@ -164,6 +164,14 @@ static uint32 _worldEventsMaxBots;
 static bool _raidOffersEnable;
 static uint32 _raidOffersInterval;
 static uint32 _raidOffersSize;
+static bool _bondsEnable;
+static bool _tradeEnable;
+static uint32 _tradeInterval;
+static bool _invasionsEnable;
+static uint32 _invasionsInterval;
+static uint32 _invasionsWaves;
+static bool _objectivesEnable;
+static uint32 _objectivesInterval;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
@@ -532,6 +540,14 @@ private:
         _raidOffersEnable               = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Raids.Enable", true);
         _raidOffersInterval             = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Raids.Interval", 3600);
         _raidOffersSize                 = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Raids.Size", 10);
+        _bondsEnable                    = sConfigMgr->GetBoolDefault("NpcBot.Chatter.Bonds.Enable", true);
+        _tradeEnable                    = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Trade.Enable", true);
+        _tradeInterval                  = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Trade.Interval", 600);
+        _invasionsEnable                = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Invasions.Enable", true);
+        _invasionsInterval              = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Invasions.Interval", 3600);
+        _invasionsWaves                 = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Invasions.Waves", 3);
+        _objectivesEnable               = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Objectives.Enable", true);
+        _objectivesInterval             = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Objectives.Interval", 900);
         _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
         _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
         _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
@@ -1463,6 +1479,38 @@ uint32 BotCfg::GetBotRaidOffersInterval()
 uint32 BotCfg::GetBotRaidOffersSize()
 {
     return _raidOffersSize;
+}
+bool BotCfg::IsBotBondsEnabled()
+{
+    return _bondsEnable;
+}
+bool BotCfg::IsBotTradeEnabled()
+{
+    return _tradeEnable;
+}
+uint32 BotCfg::GetBotTradeInterval()
+{
+    return _tradeInterval;
+}
+bool BotCfg::IsBotInvasionsEnabled()
+{
+    return _invasionsEnable;
+}
+uint32 BotCfg::GetBotInvasionsInterval()
+{
+    return _invasionsInterval;
+}
+uint32 BotCfg::GetBotInvasionsWaves()
+{
+    return _invasionsWaves;
+}
+bool BotCfg::IsBotObjectivesEnabled()
+{
+    return _objectivesEnable;
+}
+uint32 BotCfg::GetBotObjectivesInterval()
+{
+    return _objectivesInterval;
 }
 std::string const& BotCfg::GetBotChatterLocale()
 {

@@ -5636,6 +5636,51 @@ NpcBot.WanderingBots.Raids.Interval = 3600
 NpcBot.WanderingBots.Raids.Size     = 10
 
 #
+#    NpcBot.WanderingBots.Invasions.Enable
+#    NpcBot.WanderingBots.Invasions.Interval
+#    NpcBot.WanderingBots.Invasions.Waves
+#        Description: Waves of the Scourge, the Burning Legion or raiders (creatures of the player's level)
+#                     attack a town (an innkeeper or flight master nearby, no capitals) near a player
+#                     (level 10+). Free wandering bots defend the town and call for help in /yell and the
+#                     General channel. The town is safe once all waves are beaten, leftover invaders withdraw
+#                     after 12 minutes. Interval: seconds between invasions near a player (randomized).
+#        Default:     1    - (NpcBot.WanderingBots.Invasions.Enable)
+#                     3600 - (NpcBot.WanderingBots.Invasions.Interval)
+#                     3    - (NpcBot.WanderingBots.Invasions.Waves)
+
+NpcBot.WanderingBots.Invasions.Enable   = 1
+NpcBot.WanderingBots.Invasions.Interval = 3600
+NpcBot.WanderingBots.Invasions.Waves    = 3
+
+#
+#    NpcBot.WanderingBots.Objectives.Enable
+#    NpcBot.WanderingBots.Objectives.Interval
+#        Description: World pvp: free wandering bots near a capture point count like players (alliance
+#                     against horde), and in world pvp zones with players online (Hellfire Peninsula,
+#                     Zangarmarsh, Terokkar Forest, Eastern Plaguelands, ...) bots of a faction regularly head
+#                     to a capture point the enemy holds and take it. Interval: seconds between attacks per
+#                     zone (randomized).
+#        Default:     1   - (NpcBot.WanderingBots.Objectives.Enable)
+#                     900 - (NpcBot.WanderingBots.Objectives.Interval)
+
+NpcBot.WanderingBots.Objectives.Enable   = 1
+NpcBot.WanderingBots.Objectives.Interval = 900
+
+#
+#    NpcBot.WanderingBots.Trade.Enable
+#    NpcBot.WanderingBots.Trade.Interval
+#        Description: Bots post WTS (uncommon and rare equipment around the level of a listener) and WTB
+#                     (cloth, herbs, ore, leather) offers in the Trade channel of their faction. A player
+#                     whispering "buy"/"sell" (or "yes") to the bot closes the deal: the item goes to the
+#                     bags and the money to the bot, or the goods to the bot and the money to the player.
+#                     Interval: seconds between offers per faction (randomized).
+#        Default:     1   - (NpcBot.WanderingBots.Trade.Enable)
+#                     600 - (NpcBot.WanderingBots.Trade.Interval)
+
+NpcBot.WanderingBots.Trade.Enable   = 1
+NpcBot.WanderingBots.Trade.Interval = 600
+
+#
 #    NpcBot.Chatter.Memory.Enable
 #    NpcBot.Chatter.Memory.File
 #    NpcBot.Chatter.Memory.SaveInterval
@@ -5650,6 +5695,17 @@ NpcBot.WanderingBots.Raids.Size     = 10
 NpcBot.Chatter.Memory.Enable       = 1
 NpcBot.Chatter.Memory.File         = "npcbots_memory.json"
 NpcBot.Chatter.Memory.SaveInterval = 300
+
+#
+#    NpcBot.Chatter.Bonds.Enable
+#        Description: Bots get to know each other: meeting, campfire stories and fighting side by side make
+#                     friends, bad first impressions and grumpy moods make rivals. Friends greet each other
+#                     warmly and travel together for a while, rivals insult each other and talk about each
+#                     other in the General channel.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.Chatter.Bonds.Enable = 1
 
 #
 #    NpcBot.Guilds.Enable

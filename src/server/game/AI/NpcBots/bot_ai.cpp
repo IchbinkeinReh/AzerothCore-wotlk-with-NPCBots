@@ -5798,7 +5798,9 @@ uint32 bot_ai::_selectMountSpell() const
 
     InstanceTemplate const* instt = sObjectMgr->GetInstanceTemplate(me->GetMap()->GetId());
     bool map_allows_mount = (!me->GetMap()->IsDungeon() || me->GetMap()->IsBattlegroundOrArena()) && (!instt || instt->AllowMount);
-    if (!IAmFree() ? !master->IsMounted() : !(map_allows_mount && evadeDelayTimer < lastdiff * 2))
+    // companions ride along with their friend
+    if (!IAmFree() ? !master->IsMounted() :
+        !(map_allows_mount && (evadeDelayTimer < lastdiff * 2 || _activity.WantsMount())))
         return 0;
 
     Unit::AuraEffectList const& mounts = master->GetAuraEffectsByType(SPELL_AURA_MOUNTED);

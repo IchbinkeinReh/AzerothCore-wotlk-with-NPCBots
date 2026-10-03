@@ -15,6 +15,12 @@ NpcBot World Events: free wandering bots that make the world feel inhabited (Npc
 - events:       several bots gather near a player, call for help and then raid a camp of hostile creatures or
                 hunt a rare creature, players are welcome to join
 - raids:        a bot organizes a world boss or raid run and invites the player, a whole raid of bots joins
+- invasions:    waves of the Scourge, the Burning Legion or raiders attack a town near a player, bots defend it
+                and call for help
+- objectives:   in world pvp zones free bots of a faction take the capture points the enemy holds, free bots
+                count at capture points like players do
+- trade:        bots sell items they found and buy trade goods in the Trade channel, a whispered "buy" or
+                "sell" (or yes) closes the deal
 
 Offers come as a regular group invite from the bot (or as a whisper answered with yes or no). Bots hired through
 an offer stay until the task is done (quest finished, dungeon or raid left, world boss defeated) or the time is
@@ -23,6 +29,7 @@ up, then say goodbye and leave the group.
 Everything runs in the world thread while maps are not updated (BotDataMgr::Update and session handlers).
 */
 
+class GameObject;
 class Player;
 
 class BotWorldEvents
@@ -34,6 +41,8 @@ public:
     static bool OnGroupInviteAnswer(Player* player, bool accept);
     // a whispered yes or no to a bot with a pending offer, returns true if the whisper answered an offer
     static bool OnPlayerWhisper(Player* player, std::string const& botName, std::string_view message);
+    // free wandering bots at a world pvp capture point: alliance minus horde
+    static float GetCapturePointBotBalance(GameObject const* capturePoint, float radius);
 };
 
 #endif //BOTWORLDEVENTS_H

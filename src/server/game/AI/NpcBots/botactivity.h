@@ -16,7 +16,8 @@ NpcBot Activities: what a free wandering bot is doing (NpcBot.WanderingBots.Acti
 - story:    a bot at a campfire telling a player a story made up by OpenAI, sentence by sentence, reacting
             to what the player says (1 on 1 roleplay)
 - event:    a world event (botworldevents.h): gathering at a rally point, then attacking a camp or a rare
-            creature together with other bots and players
+            creature, defending a town or taking a world pvp objective together with other bots and players
+- companion: travelling with a friend (another bot, see BotChatter bonds) for a while, helping in fights
 
 Free wandering bots choose rest and roleplay on their own. Players can ask any bot (hired ones too) through
 OpenAI to rest or to tell a story.
@@ -34,7 +35,8 @@ enum BotActivityMode : uint8
     BOT_ACTIVITY_REST,
     BOT_ACTIVITY_ROLEPLAY,
     BOT_ACTIVITY_STORY,
-    BOT_ACTIVITY_EVENT
+    BOT_ACTIVITY_EVENT,
+    BOT_ACTIVITY_COMPANION
 };
 
 class BotActivity
@@ -68,6 +70,12 @@ public:
     bool JoinEvent(uint32 eventId, Position const& rally);
     void StartEventAttack(Position const& target);
 
+    // travelling with a friend
+    bool FollowCompanion(Creature const* leader, uint32 duration);
+    bool IsTravellingWithFriend() const { return _mode == BOT_ACTIVITY_COMPANION; }
+    // mounted like the friend in front
+    bool WantsMount() const { return _mode == BOT_ACTIVITY_COMPANION && _companionMounted; }
+
     // story told to a player, see BotChatter::RequestStoryStep()
     void OnStoryComment(std::string_view comment);
     void OnStoryLine(std::string const& line, bool end);
@@ -94,6 +102,7 @@ private:
     void UpdateRest(uint32 diff);
     void UpdateStory(uint32 diff);
     void UpdateEvent(uint32 diff);
+    void UpdateCompanion(uint32 diff);
 
     bool StartRoleplay();
     void JoinCircle(ObjectGuid host, Position const& seat, Position const& fire);
@@ -147,6 +156,10 @@ private:
     Position _eventTarget;
     bool _eventAttack;
     uint32 _eventMoveTimer;
+
+    // companion
+    ObjectGuid _companionLeader;
+    bool _companionMounted;
 };
 
 #endif //BOTACTIVITY_H

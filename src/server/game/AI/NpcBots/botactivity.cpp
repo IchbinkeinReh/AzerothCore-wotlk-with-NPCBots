@@ -4,6 +4,7 @@
 #include "botconfig.h"
 #include "botdatamgr.h"
 #include "botdefine.h"
+#include "bottext.h"
 #include "CellImpl.h"
 #include "Containers.h"
 #include "GameObject.h"
@@ -40,6 +41,9 @@ namespace
     constexpr float EVENT_RALLY_SPREAD = 5.0f;
     constexpr float EVENT_TARGET_SPREAD = 8.0f;
     constexpr uint32 EVENT_REPATH_DELAY = 3000;
+    constexpr float COMPANION_MAX_DISTANCE = 150.0f;
+    constexpr float COMPANION_FOLLOW_DISTANCE = 3.0f;
+    constexpr uint32 COMPANION_REPATH_DELAY = 1500;
 
     uint8 CountTextSlots(uint32 textId)
     {
@@ -93,19 +97,22 @@ namespace
 BotActivity::BotActivity(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot), _mode(BOT_ACTIVITY_ACTIVE),
     _decisionTimer(0), _modeTimer(0), _requested(false), _seated(false), _phase(ROLEPLAY_GATHER), _phaseTimer(0),
     _story(0), _storyLine(0), _storiesLeft(0), _storyLength(0), _storyLinesTold(0), _storyWaiting(false),
-    _storyEnding(false), _storyTimer(0), _eventId(0), _eventAttack(false), _eventMoveTimer(0)
+    _storyEnding(false), _storyTimer(0), _eventId(0), _eventAttack(false), _eventMoveTimer(0),
+    _companionMounted(false)
 {
 }
 
 void BotActivity::Update(uint32 diff)
 {
     // world events run without the activities config, a hired bot or a teleport ends them
-    if (_mode == BOT_ACTIVITY_EVENT)
+    if (_mode == BOT_ACTIVITY_EVENT || _mode == BOT_ACTIVITY_COMPANION)
     {
         if (!_me->IsInWorld() || !_ai->IsWanderer() || !_ai->IAmFree() || _ai->IsDuringTeleport())
             Stop();
-        else
+        else if (_mode == BOT_ACTIVITY_EVENT)
             UpdateEvent(diff);
+        else
+            UpdateCompanion(diff);
         return;
     }
 
@@ -222,13 +229,15 @@ void BotActivity::Stop()
         if (GameObject* fire = ObjectAccessor::GetGameObject(*_me, _campfire))
             fire->Delete();
 
-    if (IsSeated())
+    if (IsSeated() || _seated)
         StandUp();
 
     _mode = BOT_ACTIVITY_ACTIVE;
     _eventId = 0;
     _eventAttack = false;
     _eventMoveTimer = 0;
+    _companionLeader.Clear();
+    _companionMounted = false;
     _modeTimer = 0;
     _decisionTimer = 0;
     _requested = false;
@@ -313,6 +322,89 @@ void BotActivity::UpdateEvent(uint32 diff)
 
     if (!_me->isMoving() || _eventAttack)
         _ai->BotMovement(BOT_MOVE_POINT, &dest, nullptr, true);
+}
+
+bool BotActivity::FollowCompanion(Creature const* leader, uint32 duration)
+{
+    if (!CanStartActivity() || _mode != BOT_ACTIVITY_ACTIVE || leader == _me)
+        return false;
+
+    _mode = BOT_ACTIVITY_COMPANION;
+    _modeTimer = duration;
+    _companionLeader = leader->GetGUID();
+    _companionMounted = false;
+    _eventMoveTimer = 0;
+    return true;
+}
+
+// follows the friend at a short distance, sits down when the friend does, joins the friend's fights
+void BotActivity::UpdateCompanion(uint32 diff)
+{
+    Creature* leader = ObjectAccessor::GetCreature(*_me, _companionLeader);
+    bool leaderValid = leader && leader->IsAlive() && leader->GetBotAI() && leader->GetBotAI()->IAmFree() &&
+        !leader->GetBotAI()->IsDuringTeleport() && _me->IsWithinDistInMap(leader, COMPANION_MAX_DISTANCE);
+
+    if (_modeTimer <= diff || !leaderValid)
+    {
+        if (leaderValid && _me->IsAlive() && !_me->IsInCombat())
+            _ai->GetChatter().Announce(BOT_TEXT_BOND_TRAVEL_END, {}, CHAT_MSG_MONSTER_SAY);
+        Stop();
+        return;
+    }
+    _modeTimer -= diff;
+
+    if (!_me->IsAlive() || _me->IsInCombat() || !_me->getAttackers().empty())
+        return;
+
+    if (leader->IsInCombat())
+    {
+        if (Unit* victim = leader->GetVictim(); victim && _me->IsValidAttackTarget(victim))
+            _me->Attack(victim, !_ai->HasRole(BOT_ROLE_RANGED));
+        return;
+    }
+
+    _ai->HoldPosition(HOLD_POSITION_TIME);
+    _companionMounted = leader->IsMounted();
+
+    if (_me->GetExactDist2d(leader) <= COMPANION_FOLLOW_DISTANCE + 1.5f)
+    {
+        bool leaderSeated = leader->GetBotAI()->GetActivity().IsSeated();
+        if (!_me->isMoving())
+        {
+            if (leaderSeated && !_seated)
+            {
+                _me->SetFacingToObject(leader);
+                SitDown();
+                _seated = true;
+            }
+            else if (!leaderSeated && _seated)
+            {
+                StandUp();
+                _seated = false;
+            }
+        }
+        return;
+    }
+
+    if (_seated)
+    {
+        StandUp();
+        _seated = false;
+    }
+
+    if (_eventMoveTimer > diff)
+    {
+        _eventMoveTimer -= diff;
+        return;
+    }
+    _eventMoveTimer = COMPANION_REPATH_DELAY;
+
+    // a spot behind and beside the friend
+    float angle = leader->GetOrientation() + float(M_PI) + frand(-0.7f, 0.7f);
+    Position pos(leader->GetPositionX() + COMPANION_FOLLOW_DISTANCE * std::cos(angle),
+        leader->GetPositionY() + COMPANION_FOLLOW_DISTANCE * std::sin(angle), leader->GetPositionZ());
+    _me->UpdateAllowedPositionZ(pos.m_positionX, pos.m_positionY, pos.m_positionZ);
+    _ai->BotMovement(BOT_MOVE_POINT, &pos, nullptr, true);
 }
 
 bool BotActivity::RequestRest(Player const* /*player*/)
@@ -805,6 +897,12 @@ void BotActivity::UpdateRoleplayHost(uint32 diff)
 
 void BotActivity::EndRoleplay()
 {
+    // sharing stories at a campfire makes friends
+    if (BotCfg::IsBotBondsEnabled())
+        for (ObjectGuid guest : _guests)
+            if (Creature const* bot = ObjectAccessor::GetCreature(*_me, guest))
+                BotChatter::NoteBondBetween(_me, bot, 2);
+
     if (!_campfire.IsEmpty())
         if (GameObject* fire = ObjectAccessor::GetGameObject(*_me, _campfire))
             fire->Delete();

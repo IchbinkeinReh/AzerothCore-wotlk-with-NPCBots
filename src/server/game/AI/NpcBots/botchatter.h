@@ -118,6 +118,11 @@ public:
     void NoteRelation(Player const* player, BotRelationEvent event);
     int32 GetAffinity(ObjectGuid player) const;
 
+    // relationships to other bots (friends and rivals), symmetric, kept like the ones to players
+    static void NoteBondBetween(Creature const* a, Creature const* b, int32 delta);
+    int32 GetBondAffinity(Creature const* other) const;
+    bool HasBond(Creature const* other) const;
+
     // a line of a text id in /say (campfire stories), localized for each listener
     bool SayText(uint32 textId, uint8 slot);
     void DoTextEmote(uint32 textEmote);
@@ -154,12 +159,21 @@ public:
         bool hired = false;
         time_t lastSeen = 0;
     };
+    struct BondRecord
+    {
+        uint32 key = 0; // social key of the other bot
+        std::string name;
+        int32 affinity = 0;
+        uint32 meetings = 0;
+        time_t lastSeen = 0;
+    };
     struct SocialRecord
     {
         uint32 key = 0;
         int32 mood = 0;
         uint32 activeMinutes = 0;
         std::vector<RelationRecord> relations;
+        std::vector<BondRecord> bonds;
     };
     static std::vector<SocialRecord> ExportSocial();
     static void ImportSocial(std::vector<SocialRecord> const& records);
@@ -184,6 +198,10 @@ public:
     // the language bots talk in (NpcBot.Chatter.Locale)
     static LocaleConstant GetServerLocale();
     bool Announce(uint32 textId, TextVars vars, ChatMsg msgType, Player* target = nullptr);
+    // to every player of the bot's faction who joined the channel (ChatChannels.dbc id), e.g. Trade
+    bool AnnounceToChannel(uint32 channelId, uint32 textId, TextVars vars);
+    // the first variant of a text id in the server language
+    static std::string GetServerText(uint32 textId);
 
     // builds one chat packet for a specific locale, used by Acore::LocalizedPacketDo
     class TextBuilder
@@ -222,6 +240,12 @@ private:
 
     bool TryGreetNearbyPlayer();
     bool GreetBotNearby();
+    void NoteBond(uint32 otherKey, std::string const& otherName, int32 delta);
+    std::string GetBondsText() const;
+    bool TalkAboutRival();
+    // a text id in /say a moment later, e.g. answering another bot
+    void SayLater(uint32 textId, ObjectGuid subject, uint32 delay);
+    bool SayTextNearby(uint32 textId, WorldObject const* subject, TextVars vars = {});
     void ObservePlayers();
     void UpdateSocial();
     void ChangeMood(int32 delta);
@@ -291,6 +315,11 @@ private:
     // lasting emote (dance, sleep, sit, kneel) until the timer runs out
     uint32 _stateEmote;
     uint32 _stateEmoteTimer;
+
+    // line said a moment later
+    uint32 _delayedTextId;
+    ObjectGuid _delayedSubject;
+    uint32 _delayedTimer;
 
     // emote answering a player's emote
     uint32 _emoteReaction;

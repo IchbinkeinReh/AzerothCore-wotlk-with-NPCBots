@@ -27,6 +27,7 @@
 #include "Weather.h"
 #include "World.h"
 #include "WorldSession.h"
+#include "WorldSessionMgr.h"
 
 #include <array>
 #include <atomic>
@@ -263,11 +264,21 @@ namespace
         time_t lastSeen = 0;
     };
 
+    // another bot
+    struct Bond
+    {
+        std::string name;
+        int32 affinity = 0;
+        uint32 meetings = 0;
+        time_t lastSeen = 0;
+    };
+
     struct SocialState
     {
         int32 mood = 0;
         uint32 activeMinutes = 0;
         std::unordered_map<ObjectGuid, Relationship> relations;
+        std::unordered_map<uint32 /*social key*/, Bond> bonds;
     };
 
     constexpr int32 MOOD_LIMIT = 10;
@@ -276,6 +287,13 @@ namespace
     constexpr int32 AFFINITY_LIKE = 6;
     constexpr uint32 TIRED_MINUTES = 45;
     constexpr std::size_t MAX_RELATIONSHIPS = 50;
+    constexpr std::size_t MAX_BONDS = 30;
+    constexpr int32 BOND_FRIEND = 6;
+    constexpr int32 BOND_LIMIT = 20;
+    constexpr float CHATTER_RECOGNIZE_RANGE = 30.0f;
+    constexpr float CHATTER_BOT_MEET_RANGE = 10.0f;
+    constexpr uint32 BOND_TRAVEL_CHANCE = 30;
+    constexpr uint32 BOND_RIVAL_TALK_CHANCE = 10;
 
     std::mutex SocialLock;
     std::unordered_map<uint32 /*entry*/, SocialState> SocialStates;
@@ -621,7 +639,7 @@ namespace
 BotChatter::BotChatter(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot),
     _greetTimer(urand(2000, 5000)), _idleTimer(urand(30000, 90000)), _socialTimer(MINUTE * IN_MILLISECONDS),
     _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0), _aiPendingUntil(0),
-    _stateEmote(0), _stateEmoteTimer(0), _emoteReaction(0), _emoteTimer(0)
+    _stateEmote(0), _stateEmoteTimer(0), _delayedTextId(0), _delayedTimer(0), _emoteReaction(0), _emoteTimer(0)
 {
 }
 
@@ -688,6 +706,21 @@ void BotChatter::Update(uint32 diff)
             _replyTimer -= diff;
     }
 
+    if (_delayedTimer)
+    {
+        if (_delayedTimer <= diff)
+        {
+            _delayedTimer = 0;
+            WorldObject const* subject = _delayedSubject.IsPlayer() ?
+                static_cast<WorldObject const*>(ObjectAccessor::GetPlayer(*_me, _delayedSubject)) :
+                static_cast<WorldObject const*>(ObjectAccessor::GetCreature(*_me, _delayedSubject));
+            if (subject && CanChat(false))
+                SayTextNearby(_delayedTextId, subject);
+        }
+        else
+            _delayedTimer -= diff;
+    }
+
     if (_greetTimer > diff)
         _greetTimer -= diff;
     else
@@ -713,7 +746,8 @@ void BotChatter::Update(uint32 diff)
     {
         uint32 interval = urand(BotCfg::GetBotChatterIdleIntervalMin(), BotCfg::GetBotChatterIdleIntervalMax());
         _idleTimer = interval * IN_MILLISECONDS;
-        if (CanChat(true) && roll_chance_i(BotCfg::GetBotChatterIdleChance()))
+        if (CanChat(true) && roll_chance_i(BotCfg::GetBotChatterIdleChance()) &&
+            !(roll_chance_i(BOND_RIVAL_TALK_CHANCE) && TalkAboutRival()))
             Chatter(SelectIdleCategory(), nullptr, true);
     }
 }
@@ -1313,7 +1347,7 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
         default:                                                                  break;
     }
 
-    ss << GetRelationshipText(player);
+    ss << GetRelationshipText(player) << GetBondsText();
 
     ss << player->GetName() << ", a level " << uint32(player->GetLevel()) << ' '
         << GetEnglishRaceName(player->GetRace()) << ' ' << GetEnglishClassName(player->GetClass()) << ", talks to you ";
@@ -1511,10 +1545,11 @@ bool BotChatter::TryGreetNearbyPlayer()
     time_t cooldown = BotCfg::GetBotChatterGreetCooldown();
     std::erase_if(_greeted, [now, cooldown](auto const& greeted) { return greeted.second + cooldown <= now; });
 
+    // players the bot knows well are recognized from further away
     std::list<Player*> players;
-    Acore::AnyPlayerInObjectRangeCheck check(_me, CHATTER_GREET_RANGE, true, true);
+    Acore::AnyPlayerInObjectRangeCheck check(_me, CHATTER_RECOGNIZE_RANGE, true, true);
     Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(_me, players, check);
-    Cell::VisitObjects(_me, searcher, CHATTER_GREET_RANGE);
+    Cell::VisitObjects(_me, searcher, CHATTER_RECOGNIZE_RANGE);
 
     for (Player* player : players)
     {
@@ -1526,16 +1561,34 @@ bool BotChatter::TryGreetNearbyPlayer()
         if (_me->IsHostileTo(player) || !_me->CanSeeOrDetect(player))
             continue;
 
-        // roll once per encounter
-        _greeted[player->GetGUID()] = now;
-        if (!roll_chance_i(BotCfg::GetBotChatterGreetChance()))
+        int32 affinity = GetAffinity(player->GetGUID());
+        bool known = affinity >= AFFINITY_LIKE || affinity <= -AFFINITY_LIKE;
+        if (!known && !_me->IsWithinDistInMap(player, CHATTER_GREET_RANGE))
             continue;
 
-        // players the bot dislikes get a rude gesture
-        int32 affinity = GetAffinity(player->GetGUID());
+        // roll once per encounter, friends and foes are always noticed
+        _greeted[player->GetGUID()] = now;
+        if (!known && !roll_chance_i(BotCfg::GetBotChatterGreetChance()))
+            continue;
+
+        // players the bot dislikes: a cold remark or a rude gesture, then the bot turns its back on them
         if (affinity <= -AFFINITY_LIKE)
         {
-            PerformEmote(TEXT_EMOTE_RUDE, player);
+            if (roll_chance_i(50))
+                SayTextNearby(BOT_TEXT_CHATTER_RECOGNIZE_FOE, player);
+            else
+                PerformEmote(roll_chance_i(50) ? TEXT_EMOTE_RUDE : TEXT_EMOTE_SPIT, player);
+            if (!_me->isMoving())
+                _me->SetFacingTo(Position::NormalizeOrientation(_me->GetAbsoluteAngle(player) + float(M_PI)));
+            return true;
+        }
+
+        // friends are called by name
+        if (affinity >= AFFINITY_LIKE)
+        {
+            PerformEmote(roll_chance_i(50) ? TEXT_EMOTE_WAVE : TEXT_EMOTE_HELLO, player);
+            if (roll_chance_i(60))
+                SayTextNearby(BOT_TEXT_CHATTER_RECOGNIZE_FRIEND, player);
             return true;
         }
 
@@ -1543,9 +1596,7 @@ bool BotChatter::TryGreetNearbyPlayer()
         if (roll_chance_i(60))
         {
             std::vector<uint32> emotes;
-            if (affinity >= AFFINITY_LIKE)
-                emotes = { TEXT_EMOTE_WAVE, TEXT_EMOTE_HELLO, TEXT_EMOTE_SMILE };
-            else switch (GetMood())
+            switch (GetMood())
             {
                 case BOT_MOOD_CHEERFUL: emotes = { TEXT_EMOTE_WAVE, TEXT_EMOTE_HELLO, TEXT_EMOTE_SMILE }; break;
                 case BOT_MOOD_GRUMPY:
@@ -1570,30 +1621,115 @@ bool BotChatter::TryGreetNearbyPlayer()
     return false;
 }
 
-// bots passing each other nod or wave
+// bots meeting each other: they get to know each other, become friends or rivals over time; friends greet
+// each other warmly and may travel together for a while, rivals exchange insults
 bool BotChatter::GreetBotNearby()
 {
-    if (!roll_chance_i(20) || !HasPlayersInRange(sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_TEXTEMOTE)))
+    if (!roll_chance_i(20))
         return false;
 
     time_t now = GameTime::GetGameTime().count();
     std::list<Creature*> bots;
-    NearbyBotCheck check(_me, 10.0f);
+    NearbyBotCheck check(_me, CHATTER_BOT_MEET_RANGE);
     Acore::CreatureListSearcher<NearbyBotCheck> searcher(_me, bots, check);
-    Cell::VisitObjects(_me, searcher, 10.0f);
+    Cell::VisitObjects(_me, searcher, CHATTER_BOT_MEET_RANGE);
 
+    bool audience = HasPlayersInRange(sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_TEXTEMOTE));
     for (Creature* bot : bots)
     {
-        if (bot == _me || _greeted.contains(bot->GetGUID()) || _me->IsHostileTo(bot) || bot->IsInCombat())
+        if (bot == _me || !bot->GetBotAI() || _greeted.contains(bot->GetGUID()) || _me->IsHostileTo(bot) ||
+            bot->IsInCombat())
             continue;
 
         _greeted[bot->GetGUID()] = now;
-        static constexpr std::array greetings{ TEXT_EMOTE_NOD, TEXT_EMOTE_WAVE, TEXT_EMOTE_SALUTE };
-        PerformEmote(Acore::Containers::SelectRandomContainerElement(greetings), bot);
+        BotChatter& other = bot->GetBotAI()->GetChatter();
+        other._greeted[_me->GetGUID()] = now;
+
+        // first impressions vary, later meetings depend on the mood
+        int32 delta;
+        if (!HasBond(bot))
+            delta = irand(-3, 3);
+        else if (GetMood() == BOT_MOOD_GRUMPY || other.GetMood() == BOT_MOOD_GRUMPY)
+            delta = roll_chance_i(40) ? -1 : 0;
+        else
+            delta = 1;
+        if (BotCfg::IsBotBondsEnabled())
+            NoteBondBetween(_me, bot, delta);
+
+        if (!audience)
+            return true;
+
+        int32 bond = BotCfg::IsBotBondsEnabled() ? GetBondAffinity(bot) : 0;
+        if (bond >= BOND_FRIEND)
+        {
+            PerformEmote(roll_chance_i(50) ? TEXT_EMOTE_HUG : TEXT_EMOTE_WAVE, bot);
+            SayTextNearby(BOT_TEXT_BOND_FRIEND_GREET, bot);
+
+            // the other one joins for a while
+            bot_ai* otherAI = bot->GetBotAI();
+            if (roll_chance_i(BOND_TRAVEL_CHANCE) && _ai->IsWanderer() && _ai->IAmFree() &&
+                _ai->GetActivity().GetMode() == BOT_ACTIVITY_ACTIVE &&
+                otherAI->GetActivity().FollowCompanion(_me, urand(10, 20) * MINUTE * IN_MILLISECONDS))
+                other.SayLater(BOT_TEXT_BOND_TRAVEL, _me->GetGUID(), urand(2000, 3500));
+        }
+        else if (bond <= -BOND_FRIEND)
+        {
+            PerformEmote(roll_chance_i(50) ? TEXT_EMOTE_RUDE : TEXT_EMOTE_THREATEN, bot);
+            SayTextNearby(BOT_TEXT_BOND_RIVAL_TAUNT, bot);
+            other.SayLater(BOT_TEXT_BOND_RIVAL_REPLY, _me->GetGUID(), urand(2000, 3500));
+        }
+        else
+        {
+            static constexpr std::array greetings{ TEXT_EMOTE_NOD, TEXT_EMOTE_WAVE, TEXT_EMOTE_SALUTE };
+            PerformEmote(Acore::Containers::SelectRandomContainerElement(greetings), bot);
+        }
         return true;
     }
 
     return false;
+}
+
+void BotChatter::SayLater(uint32 textId, ObjectGuid subject, uint32 delay)
+{
+    _delayedTextId = textId;
+    _delayedSubject = subject;
+    _delayedTimer = delay;
+}
+
+bool BotChatter::SayTextNearby(uint32 textId, WorldObject const* subject, TextVars vars)
+{
+    ChatterText text;
+    if (!SelectTextVariant(textId, text))
+        return false;
+    text.vars = std::move(vars);
+    return SayNearby(text, subject, CHAT_MSG_MONSTER_SAY);
+}
+
+// rivals are talked about in General
+bool BotChatter::TalkAboutRival()
+{
+    if (!BotCfg::IsBotBondsEnabled())
+        return false;
+
+    std::vector<std::string> rivals;
+    {
+        const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
+        std::lock_guard<std::mutex> lock(SocialLock);
+        auto itr = SocialStates.find(key);
+        if (itr == SocialStates.end())
+            return false;
+        for (auto const& [_, bond] : itr->second.bonds)
+            if (bond.affinity <= -BOND_FRIEND)
+                rivals.push_back(bond.name);
+    }
+    if (rivals.empty())
+        return false;
+
+    ChatterText text;
+    if (!SelectTextVariant(BOT_TEXT_BOND_RIVAL_CHANNEL, text))
+        return false;
+    text.vars = { { "%rival", Acore::Containers::SelectRandomContainerElement(rivals) } };
+    return SayToZoneChannel(text, nullptr, false);
 }
 
 // players around dying, leveling up, fighting with or against the bot
@@ -1796,6 +1932,100 @@ void BotChatter::NoteRelation(Player const* player, BotRelationEvent event)
     }
 }
 
+void BotChatter::NoteBondBetween(Creature const* a, Creature const* b, int32 delta)
+{
+    if (!a->GetBotAI() || !b->GetBotAI())
+        return;
+
+    const uint32 keyA = BotMemory::GetSocialKey(a->GetEntry());
+    const uint32 keyB = BotMemory::GetSocialKey(b->GetEntry());
+    if (keyA == keyB)
+        return;
+
+    a->GetBotAI()->GetChatter().NoteBond(keyB, b->GetName(), delta);
+    b->GetBotAI()->GetChatter().NoteBond(keyA, a->GetName(), delta);
+}
+
+void BotChatter::NoteBond(uint32 otherKey, std::string const& otherName, int32 delta)
+{
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
+    std::lock_guard<std::mutex> lock(SocialLock);
+    SocialState& state = SocialStates[key];
+    Bond& bond = state.bonds[otherKey];
+    bond.name = otherName;
+    bond.lastSeen = GameTime::GetGameTime().count();
+    ++bond.meetings;
+    bond.affinity = std::clamp(bond.affinity + delta, -BOND_LIMIT, BOND_LIMIT);
+
+    // forget the one not seen for the longest time
+    if (state.bonds.size() > MAX_BONDS)
+    {
+        auto oldest = std::ranges::min_element(state.bonds, {},
+            [](auto const& entry) { return entry.second.lastSeen; });
+        state.bonds.erase(oldest);
+    }
+}
+
+int32 BotChatter::GetBondAffinity(Creature const* other) const
+{
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
+    const uint32 otherKey = BotMemory::GetSocialKey(other->GetEntry());
+    std::lock_guard<std::mutex> lock(SocialLock);
+    auto itr = SocialStates.find(key);
+    if (itr == SocialStates.end())
+        return 0;
+    auto bond = itr->second.bonds.find(otherKey);
+    return bond != itr->second.bonds.end() ? bond->second.affinity : 0;
+}
+
+bool BotChatter::HasBond(Creature const* other) const
+{
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
+    const uint32 otherKey = BotMemory::GetSocialKey(other->GetEntry());
+    std::lock_guard<std::mutex> lock(SocialLock);
+    auto itr = SocialStates.find(key);
+    return itr != SocialStates.end() && itr->second.bonds.contains(otherKey);
+}
+
+// friends and rivals among the other adventurers, for OpenAI
+std::string BotChatter::GetBondsText() const
+{
+    std::vector<std::string> friends, rivals;
+    {
+        const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
+        std::lock_guard<std::mutex> lock(SocialLock);
+        auto itr = SocialStates.find(key);
+        if (itr == SocialStates.end())
+            return "";
+        for (auto const& [_, bond] : itr->second.bonds)
+        {
+            if (bond.affinity >= BOND_FRIEND)
+                friends.push_back(bond.name);
+            else if (bond.affinity <= -BOND_FRIEND)
+                rivals.push_back(bond.name);
+        }
+    }
+
+    std::ostringstream ss;
+    auto list = [&ss](std::vector<std::string> const& names) {
+        for (std::size_t i = 0; i < names.size() && i < 5; ++i)
+            ss << (i ? ", " : "") << names[i];
+    };
+    if (!friends.empty())
+    {
+        ss << "Your friends among the other adventurers: ";
+        list(friends);
+        ss << ". ";
+    }
+    if (!rivals.empty())
+    {
+        ss << "Your rivals you cannot stand: ";
+        list(rivals);
+        ss << ". ";
+    }
+    return ss.str();
+}
+
 int32 BotChatter::GetAffinity(ObjectGuid player) const
 {
     const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
@@ -1822,6 +2052,8 @@ std::vector<BotChatter::SocialRecord> BotChatter::ExportSocial()
         for (auto const& [guid, r] : state.relations)
             record.relations.push_back({ guid.GetCounter(), r.name, r.affinity, r.talks, r.fights, r.attacks,
                 r.killedMe, r.killedThem, r.stories, r.friendly, r.hostile, r.hired, r.lastSeen });
+        for (auto const& [otherKey, bond] : state.bonds)
+            record.bonds.push_back({ otherKey, bond.name, bond.affinity, bond.meetings, bond.lastSeen });
     }
     return records;
 }
@@ -1849,6 +2081,14 @@ void BotChatter::ImportSocial(std::vector<SocialRecord> const& records)
             relation.hostile = r.hostile;
             relation.hired = r.hired;
             relation.lastSeen = r.lastSeen;
+        }
+        for (BondRecord const& b : record.bonds)
+        {
+            Bond& bond = state.bonds[b.key];
+            bond.name = b.name;
+            bond.affinity = std::clamp(b.affinity, -BOND_LIMIT, BOND_LIMIT);
+            bond.meetings = b.meetings;
+            bond.lastSeen = b.lastSeen;
         }
     }
 }
@@ -2054,6 +2294,42 @@ bool BotChatter::MatchesKeywordText(std::string_view message, uint32 textId)
 LocaleConstant BotChatter::GetServerLocale()
 {
     return GetChatterLocale();
+}
+
+std::string BotChatter::GetServerText(uint32 textId)
+{
+    return GetTextVariant(textId, 0, GetChatterLocale());
+}
+
+bool BotChatter::AnnounceToChannel(uint32 channelId, uint32 textId, TextVars vars)
+{
+    ChatterText text;
+    if (!SelectTextVariant(textId, text))
+        return false;
+    text.vars = std::move(vars);
+
+    TeamId team = BotDataMgr::GetTeamIdForFaction(_me->GetFaction());
+    bool sent = false;
+    for (auto const& [_, session] : sWorldSessionMgr->GetAllSessions())
+    {
+        Player* player = session ? session->GetPlayer() : nullptr;
+        if (!player || !player->IsInWorld() || (team != TEAM_NEUTRAL && player->GetTeamId() != team))
+            continue;
+
+        for (Channel* channel : player->GetJoinedChannelsForBots())
+        {
+            if (!channel || channel->GetChannelId() != channelId)
+                continue;
+
+            WorldPacket data;
+            TextBuilder builder(*this, CHAT_MSG_CHANNEL, text, nullptr, channel->GetName());
+            builder(data, session->GetSessionDbLocaleIndex());
+            player->SendDirectMessage(&data);
+            sent = true;
+            break;
+        }
+    }
+    return sent;
 }
 
 bool BotChatter::Announce(uint32 textId, TextVars vars, ChatMsg msgType, Player* target)

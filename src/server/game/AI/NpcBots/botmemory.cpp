@@ -122,9 +122,18 @@ namespace
             });
         }
 
+        json::array bonds;
+        for (BotChatter::BondRecord const& bond : record.bonds)
+        {
+            bonds.push_back(json::object{
+                { "key", bond.key }, { "name", bond.name }, { "affinity", bond.affinity },
+                { "meetings", bond.meetings }, { "lastSeen", int64(bond.lastSeen) }
+            });
+        }
+
         return json::object{
             { "key", record.key }, { "mood", record.mood }, { "activeMinutes", record.activeMinutes },
-            { "relations", std::move(relations) }
+            { "relations", std::move(relations) }, { "bonds", std::move(bonds) }
         };
     }
 
@@ -157,6 +166,24 @@ namespace
                 r.lastSeen = GetNumber<time_t>(rel, "lastSeen");
                 if (r.player)
                     record.relations.push_back(std::move(r));
+            }
+        }
+        if (json::value const* bonds = obj.if_contains("bonds"); bonds && bonds->is_array())
+        {
+            for (json::value const& value : bonds->as_array())
+            {
+                if (!value.is_object())
+                    continue;
+                json::object const& bond = value.as_object();
+                BotChatter::BondRecord b;
+                b.key = GetNumber<uint32>(bond, "key");
+                b.name = GetString(bond, "name");
+                b.affinity = GetNumber<int32>(bond, "affinity");
+                b.meetings = GetNumber<uint32>(bond, "meetings");
+                b.lastSeen = GetNumber<time_t>(bond, "lastSeen");
+                // bonds to bots that are not remembered after a restart are useless
+                if (b.key && BotMemory::IsPersistentSocialKey(b.key))
+                    record.bonds.push_back(std::move(b));
             }
         }
         return record;
