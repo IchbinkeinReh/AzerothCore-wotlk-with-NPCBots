@@ -86,6 +86,10 @@ public:
     // mounted like the friend in front
     bool WantsMount() const { return _mode == BOT_ACTIVITY_COMPANION && _companionMounted; }
 
+    // looks of a free wandering bot: a rare ground mount (0 if none) and a vanity pet following it
+    uint32 GetRareMountSpell() const;
+    Creature* GetVanityPet() const;
+
     // story told to a player, see BotChatter::RequestStoryStep()
     void OnStoryComment(std::string_view comment);
     void OnStoryLine(std::string const& line, bool end);
@@ -118,6 +122,9 @@ private:
     bool StartFishing();
     void UpdateGather(uint32 diff);
     void EndGather();
+    void UpdateVanityPet(uint32 diff);
+    void DespawnVanityPet();
+    uint32 GetLooksSeed() const;
 
     bool StartRoleplay();
     void JoinCircle(ObjectGuid host, Position const& seat, Position const& fire);
@@ -185,6 +192,10 @@ private:
     uint32 _gatherTimer;
     ObjectGuid _gatherBobber;
     uint32 _gatherOldItem;
+
+    // vanity pet
+    ObjectGuid _vanityPet;
+    uint32 _vanityPetTimer;
 };
 
 #endif //BOTACTIVITY_H

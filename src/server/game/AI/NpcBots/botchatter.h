@@ -202,7 +202,7 @@ public:
     bool AnnounceToChannel(uint32 channelId, uint32 textId, TextVars vars);
     // the first variant of a text id in the server language
     static std::string GetServerText(uint32 textId);
-    // a raw text (e.g. made up by OpenAI): /say, /yell or a whisper to target
+    // a raw text (e.g. made up by OpenAI): /say, /yell, the zone's General channel or a whisper to target
     bool SayRaw(std::string const& text, ChatMsg msgType, Player* target = nullptr);
     // a single chat line out of an OpenAI answer
     static std::string SanitizeText(std::string const& text);
@@ -250,6 +250,15 @@ private:
     std::string GetBondsText() const;
     bool TalkAboutRival();
     bool TalkAboutNews();
+    bool TalkAboutLooks();
+    bool StartDancing();
+    bool TalkAboutRumor();
+    // a remark on a player's rare gear, mount or a fresh achievement, now and then
+    bool TryCommentOnPlayer();
+    // what is notable about a player, for OpenAI
+    static std::string GetNotableText(Player const* player);
+    // bots around a source copy a catchy emote (dance, cheer...) a moment later
+    static void SpreadEmote(WorldObject const* source, uint32 textEmote, uint8 depth);
     // a text id in /say a moment later, e.g. answering another bot
     void SayLater(uint32 textId, ObjectGuid subject, uint32 delay);
     bool SayTextNearby(uint32 textId, WorldObject const* subject, TextVars vars = {});
@@ -322,6 +331,11 @@ private:
     // lasting emote (dance, sleep, sit, kneel) until the timer runs out
     uint32 _stateEmote;
     uint32 _stateEmoteTimer;
+
+    // emote copied from someone nearby
+    uint32 _chainEmote;
+    uint8 _chainDepth;
+    uint32 _chainTimer;
 
     // line said a moment later
     uint32 _delayedTextId;

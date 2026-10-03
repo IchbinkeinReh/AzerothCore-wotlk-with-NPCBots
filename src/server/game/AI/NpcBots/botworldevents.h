@@ -5,6 +5,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 /*
 NpcBot World Events: free wandering bots that make the world feel inhabited (NpcBot.WanderingBots.*):
@@ -66,6 +67,17 @@ public:
     static BotEventOutcome GetEventOutcome(uint32 eventId);
 
     static std::string FormatMoney(uint32 copper);
+    static std::string FormatItemLink(uint32 itemId, uint32 count = 1);
+
+    // a player's /cheer signs up for an inn contest nearby, map thread
+    static void OnPlayerEmote(Player const* player, uint32 textEmote);
+
+    // villains (botvillains.h): invaders of a theme (0 Scourge, 1 Legion, 2 raiders) around a level, and the
+    // villain's last stand at its lair
+    static std::vector<uint32> GetInvaderEntries(uint8 theme, uint8 level);
+    static uint32 StartVillainBattle(Player* player, uint32 villainId, uint32 villainEntry, Position const& lair,
+        std::string const& villainName, std::string const& place, std::vector<uint32> const& followers,
+        std::string const& taunt);
 };
 
 #endif //BOTWORLDEVENTS_H

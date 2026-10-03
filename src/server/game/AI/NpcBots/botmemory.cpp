@@ -5,6 +5,7 @@
 #include "botmemory.h"
 #include "botnews.h"
 #include "botstoryarcs.h"
+#include "botvillains.h"
 #include "Log.h"
 #include "Timer.h"
 #include "World.h"
@@ -213,6 +214,46 @@ namespace
         return arc;
     }
 
+    json::value VillainToJson(BotVillains::VillainRecord const& villain)
+    {
+        return json::object{
+            { "id", villain.id }, { "entry", villain.entry }, { "name", villain.name }, { "title", villain.title },
+            { "cult", villain.cult }, { "backstory", villain.backstory }, { "taunt", villain.taunt },
+            { "defeatLine", villain.defeatLine }, { "theme", villain.theme }, { "minLevel", villain.minLevel },
+            { "maxLevel", villain.maxLevel }, { "map", villain.mapId }, { "zone", villain.zoneId }, { "x", villain.x },
+            { "y", villain.y }, { "z", villain.z }, { "lairPlace", villain.lairPlace },
+            { "progress", villain.progress },
+            { "state", villain.state }, { "created", int64(villain.created) }, { "defeated", int64(villain.defeated) }
+        };
+    }
+
+    BotVillains::VillainRecord VillainFromJson(json::object const& obj)
+    {
+        BotVillains::VillainRecord villain;
+        villain.id = GetNumber<uint32>(obj, "id");
+        villain.entry = GetNumber<uint32>(obj, "entry");
+        villain.name = GetString(obj, "name");
+        villain.title = GetString(obj, "title");
+        villain.cult = GetString(obj, "cult");
+        villain.backstory = GetString(obj, "backstory");
+        villain.taunt = GetString(obj, "taunt");
+        villain.defeatLine = GetString(obj, "defeatLine");
+        villain.theme = GetNumber<uint8>(obj, "theme");
+        villain.minLevel = GetNumber<uint8>(obj, "minLevel");
+        villain.maxLevel = GetNumber<uint8>(obj, "maxLevel");
+        villain.mapId = GetNumber<uint32>(obj, "map");
+        villain.zoneId = GetNumber<uint32>(obj, "zone");
+        villain.x = GetFloat(obj, "x");
+        villain.y = GetFloat(obj, "y");
+        villain.z = GetFloat(obj, "z");
+        villain.lairPlace = GetString(obj, "lairPlace");
+        villain.progress = GetNumber<uint32>(obj, "progress");
+        villain.state = GetNumber<uint8>(obj, "state");
+        villain.created = GetNumber<time_t>(obj, "created");
+        villain.defeated = GetNumber<time_t>(obj, "defeated");
+        return villain;
+    }
+
     BotChatter::SocialRecord SocialFromJson(json::object const& obj)
     {
         BotChatter::SocialRecord record;
@@ -342,6 +383,13 @@ void BotMemory::Load()
                 arcs.push_back(ArcFromJson(value.as_object()));
     BotStoryArcs::ImportArcs(arcs);
 
+    std::vector<BotVillains::VillainRecord> villains;
+    if (json::value const* values = obj.if_contains("villains"); values && values->is_array())
+        for (json::value const& value : values->as_array())
+            if (value.is_object())
+                villains.push_back(VillainFromJson(value.as_object()));
+    BotVillains::ImportVillains(villains);
+
     BOT_LOG_INFO("server.loading", ">> Loaded {} bot personas and memories of {} bots from '{}' in {} ms",
         uint32(Personas.size()), uint32(social.size()), path, GetMSTimeDiffToNow(oldMSTime));
 #else
@@ -382,6 +430,11 @@ void BotMemory::Save()
     for (BotStoryArcs::ArcRecord const& arc : BotStoryArcs::ExportArcs())
         arcs.push_back(ArcToJson(arc));
     root["arcs"] = std::move(arcs);
+
+    json::array villains;
+    for (BotVillains::VillainRecord const& villain : BotVillains::ExportVillains())
+        villains.push_back(VillainToJson(villain));
+    root["villains"] = std::move(villains);
 
     // write a temporary file first, a crash while writing must not destroy the memories
     std::string const path = GetMemoryFilePath();

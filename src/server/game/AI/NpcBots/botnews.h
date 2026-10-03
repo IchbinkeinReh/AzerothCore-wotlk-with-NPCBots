@@ -17,6 +17,7 @@ players they never met. Every deed makes the player more famous. Kept in the bot
 Deeds are recorded from the world thread, news is read from map threads too.
 */
 
+class Creature;
 class Player;
 
 enum BotDeedType : uint8
@@ -28,6 +29,8 @@ enum BotDeedType : uint8
     BOT_DEED_WORLD_BOSS,            // subject: world boss, place: zone
     BOT_DEED_DUNGEON,               // subject: dungeon or raid
     BOT_DEED_STORY_ARC,             // subject: story title, place: zone
+    BOT_DEED_VILLAIN,               // subject: villain, place: lair
+    BOT_DEED_CONTEST,               // subject: "a race", "a drinking contest"..., place: where
 
     BOT_DEED_TYPE_END
 };
@@ -61,6 +64,9 @@ public:
     static std::string GetNewsContext(TeamId team, ObjectGuid player);
     // the latest deed of a player as a sentence
     static std::string GetLatestDeedText(ObjectGuid player);
+
+    // a true rumor: a rare creature alive near the bot ("They say ... near ..."), empty if none, map thread
+    static std::string GetRareRumor(Creature const* bot);
 
     // bot memory
     static std::vector<BotDeed> ExportDeeds();

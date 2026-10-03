@@ -17,7 +17,8 @@ talking to nobody.
 enum BotAIRequestKind : uint8
 {
     BOT_AI_KIND_CHAT = 0,   // a chat answer or a story sentence (BotChatter)
-    BOT_AI_KIND_STORY_ARC   // a story arc made up for a player (BotStoryArcs), raw JSON in BotAIResult::text
+    BOT_AI_KIND_STORY_ARC,  // a story arc made up for a player (BotStoryArcs), raw JSON in BotAIResult::text
+    BOT_AI_KIND_VILLAIN     // a villain made up while a player is online (BotVillains), raw JSON
 };
 
 struct BotAIMessage

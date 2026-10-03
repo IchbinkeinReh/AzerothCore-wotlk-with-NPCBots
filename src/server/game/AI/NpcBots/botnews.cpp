@@ -2,9 +2,15 @@
 #include "botconfig.h"
 #include "botnews.h"
 #include "bottext.h"
+#include "Containers.h"
+#include "Creature.h"
+#include "DBCStores.h"
 #include "GameTime.h"
+#include "Map.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "Random.h"
+#include "World.h"
 
 #include <mutex>
 #include <sstream>
@@ -21,7 +27,22 @@ namespace
     constexpr uint32 NEWS_MAX_TOLD = 4;
     constexpr uint32 FAME_FAMOUS = 6;
 
-    constexpr std::array<uint32, BOT_DEED_TYPE_END> DeedFame = { 3, 1, 1, 1, 4, 2, 3 };
+    constexpr std::array<uint32, BOT_DEED_TYPE_END> DeedFame = { 3, 1, 1, 1, 4, 2, 3, 5, 1 };
+    constexpr std::array<uint32, BOT_DEED_TYPE_END> DeedTexts =
+    {
+        BOT_TEXT_DEED_TOWN_DEFENDED, BOT_TEXT_DEED_CAMP_RAIDED, BOT_TEXT_DEED_RARE_SLAIN, BOT_TEXT_DEED_OBJECTIVE_TAKEN,
+        BOT_TEXT_DEED_WORLD_BOSS, BOT_TEXT_DEED_DUNGEON, BOT_TEXT_DEED_STORY_ARC, BOT_TEXT_DEED_VILLAIN,
+        BOT_TEXT_DEED_CONTEST
+    };
+    constexpr float RUMOR_RANGE = 600.0f;
+
+    // rare creatures spawned on the continents, per map
+    struct RareSpawn
+    {
+        ObjectGuid::LowType spawnId;
+        float x;
+        float y;
+    };
 
     std::mutex GossipLock;
     std::vector<BotDeed> Deeds;
@@ -39,7 +60,7 @@ namespace
         if (deed.type >= BOT_DEED_TYPE_END)
             return "";
 
-        std::string text = BotChatter::GetServerText(BOT_TEXT_DEED_TOWN_DEFENDED + deed.type);
+        std::string text = BotChatter::GetServerText(DeedTexts[deed.type]);
         ReplaceAll(text, "%player", deed.playerName);
         ReplaceAll(text, "%subject", deed.subject);
         ReplaceAll(text, "%place", deed.place);
@@ -165,6 +186,63 @@ std::string BotNews::GetLatestDeedText(ObjectGuid player)
         if (itr->player == player.GetCounter())
             return FormatDeed(*itr);
     return "";
+}
+
+std::string BotNews::GetRareRumor(Creature const* bot)
+{
+    static std::unordered_map<uint32 /*map*/, std::vector<RareSpawn>> spawns;
+    static std::once_flag initialized;
+    std::call_once(initialized, [] {
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+        {
+            MapEntry const* map = sMapStore.LookupEntry(data.mapid);
+            CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(data.id);
+            if (map && map->IsContinent() && proto &&
+                (proto->rank == CREATURE_ELITE_RARE || proto->rank == CREATURE_ELITE_RAREELITE))
+                spawns[data.mapid].push_back({ spawnId, data.posX, data.posY });
+        }
+    });
+
+    if (!BotCfg::IsBotNewsEnabled() || !bot->IsInWorld())
+        return "";
+
+    auto itr = spawns.find(bot->GetMapId());
+    if (itr == spawns.end())
+        return "";
+
+    // only rares that are really there: spawned, alive, of a level the bot cares about
+    Map* map = bot->GetMap();
+    std::vector<Creature*> rares;
+    for (RareSpawn const& spawn : itr->second)
+    {
+        if (bot->GetExactDist2d(spawn.x, spawn.y) > RUMOR_RANGE)
+            continue;
+        auto bounds = map->GetCreatureBySpawnIdStore().equal_range(spawn.spawnId);
+        for (auto creature = bounds.first; creature != bounds.second; ++creature)
+            if (creature->second->IsAlive() && creature->second->IsInWorld() &&
+                std::abs(int32(creature->second->GetLevel()) - int32(bot->GetLevel())) <= 10)
+                rares.push_back(creature->second);
+    }
+    if (rares.empty())
+        return "";
+
+    Creature const* rare = Acore::Containers::SelectRandomContainerElement(rares);
+    LocaleConstant locale = BotChatter::GetServerLocale();
+    LocaleConstant dbcLocale = sWorld->GetAvailableDbcLocale(locale);
+
+    std::string name = rare->GetCreatureTemplate()->Name;
+    if (CreatureLocale const* creatureLocale = sObjectMgr->GetCreatureLocale(rare->GetEntry()))
+        ObjectMgr::GetLocaleString(creatureLocale->Name, locale, name);
+
+    AreaTableEntry const* area = sAreaTableStore.LookupEntry(rare->GetAreaId());
+    std::string place = area ? area->area_name[dbcLocale] : "";
+    if (place.empty())
+        return "";
+
+    std::string text = BotChatter::GetServerText(BOT_TEXT_RUMOR_RARE);
+    ReplaceAll(text, "%enemy", name);
+    ReplaceAll(text, "%place", place);
+    return text;
 }
 
 std::vector<BotDeed> BotNews::ExportDeeds()

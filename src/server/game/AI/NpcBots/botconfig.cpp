@@ -176,6 +176,14 @@ static bool _newsEnable;
 static bool _storyArcsEnable;
 static uint32 _storyArcsInterval;
 static uint32 _activitiesGatherChance;
+static bool _villainsEnable;
+static uint32 _villainsStrength;
+static bool _contestsEnable;
+static uint32 _contestsInterval;
+static bool _commentsEnable;
+static uint32 _commentsCooldown;
+static bool _emoteChainsEnable;
+static bool _vanityPetsEnable;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
@@ -556,6 +564,14 @@ private:
         _storyArcsEnable                = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.StoryArcs.Enable", true);
         _storyArcsInterval              = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.StoryArcs.Interval", 7200);
         _activitiesGatherChance         = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.GatherChance", 10);
+        _villainsEnable                 = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Villains.Enable", true);
+        _villainsStrength               = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.Villains.Strength", 5);
+        _contestsEnable                 = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Contests.Enable", true);
+        _contestsInterval               = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Contests.Interval", 2400);
+        _commentsEnable                 = sConfigMgr->GetBoolDefault("NpcBot.Chatter.Comments.Enable", true);
+        _commentsCooldown               = sConfigMgr->GetIntDefault("NpcBot.Chatter.Comments.Cooldown", 1800);
+        _emoteChainsEnable              = sConfigMgr->GetBoolDefault("NpcBot.Chatter.EmoteChains.Enable", true);
+        _vanityPetsEnable               = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.VanityPets.Enable", true);
         _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
         _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
         _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
@@ -1535,6 +1551,38 @@ uint32 BotCfg::GetBotStoryArcsInterval()
 uint32 BotCfg::GetBotActivitiesGatherChance()
 {
     return _activitiesGatherChance;
+}
+bool BotCfg::IsBotVillainsEnabled()
+{
+    return _villainsEnable;
+}
+uint32 BotCfg::GetBotVillainsStrength()
+{
+    return _villainsStrength;
+}
+bool BotCfg::IsBotContestsEnabled()
+{
+    return _contestsEnable;
+}
+uint32 BotCfg::GetBotContestsInterval()
+{
+    return _contestsInterval;
+}
+bool BotCfg::IsBotCommentsEnabled()
+{
+    return _commentsEnable;
+}
+uint32 BotCfg::GetBotCommentsCooldown()
+{
+    return _commentsCooldown;
+}
+bool BotCfg::IsBotEmoteChainsEnabled()
+{
+    return _emoteChainsEnable;
+}
+bool BotCfg::IsBotVanityPetsEnabled()
+{
+    return _vanityPetsEnable;
 }
 std::string const& BotCfg::GetBotChatterLocale()
 {

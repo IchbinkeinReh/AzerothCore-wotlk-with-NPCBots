@@ -5871,6 +5871,9 @@ uint32 bot_ai::_selectMountSpell() const
                 default:
                     break;
             }
+            // some wandering bots ride something rare
+            if (!myMountSpellId && !useSlowMount)
+                myMountSpellId = _activity.GetRareMountSpell();
             //Select by race
             if (!myMountSpellId)
             {

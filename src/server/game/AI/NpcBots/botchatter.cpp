@@ -8,6 +8,7 @@
 #include "botnews.h"
 #include "botopenai.h"
 #include "botstoryarcs.h"
+#include "botvillains.h"
 #include "bottext.h"
 #include "botworldevents.h"
 #include "CellImpl.h"
@@ -27,6 +28,9 @@
 #include "Timer.h"
 #include "Util.h"
 #include "Weather.h"
+#include "AchievementMgr.h"
+#include "SpellAuraEffects.h"
+#include "SpellMgr.h"
 #include "World.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
@@ -297,6 +301,53 @@ namespace
     constexpr uint32 BOND_TRAVEL_CHANCE = 30;
     constexpr uint32 BOND_RIVAL_TALK_CHANCE = 10;
     constexpr uint32 NEWS_TALK_CHANCE = 15;
+    constexpr uint32 RUMOR_TALK_CHANCE = 10;
+    constexpr uint32 LOOKS_TALK_CHANCE = 10;
+    constexpr uint32 DANCE_CHANCE = 5;
+    constexpr uint32 COMMENT_CHANCE = 10;
+    constexpr float COMMENT_RANGE = 10.0f;
+    constexpr time_t COMMENT_ACHIEVEMENT_MAX_AGE = 2 * DAY;
+    constexpr uint32 COMMENT_ACHIEVEMENT_MIN_POINTS = 10;
+    constexpr float EMOTE_CHAIN_RANGE = 15.0f;
+    constexpr uint8 EMOTE_CHAIN_MAX_DEPTH = 2;
+
+    // catchy emotes bots around copy, and the chance of each bot to join in
+    uint32 GetEmoteChainChance(uint32 textEmote)
+    {
+        switch (textEmote)
+        {
+            case TEXT_EMOTE_DANCE:   return 35;
+            case TEXT_EMOTE_CHEER:   return 40;
+            case TEXT_EMOTE_APPLAUD: return 35;
+            case TEXT_EMOTE_LAUGH:   return 25;
+            case TEXT_EMOTE_SALUTE:  return 20;
+            default:                 return 0;
+        }
+    }
+
+    // a player's remarkable things a bot already talked about, for all bots, world and map threads
+    std::mutex CommentsLock;
+    std::unordered_map<ObjectGuid, time_t> CommentCooldowns;
+    std::unordered_map<ObjectGuid, std::unordered_set<uint32>> CommentedThings;
+
+    // mount spell -> the item teaching it, rare or better quality only
+    std::unordered_map<uint32, uint32> const& GetMountItems()
+    {
+        static std::unordered_map<uint32, uint32> mounts;
+        static std::once_flag initialized;
+        std::call_once(initialized, [] {
+            for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+            {
+                if (proto.Class != ITEM_CLASS_MISC || proto.SubClass != ITEM_SUBCLASS_JUNK_MOUNT ||
+                    proto.Quality < ITEM_QUALITY_RARE)
+                    continue;
+                for (auto const& spell : proto.Spells)
+                    if (spell.SpellId > 0 && spell.SpellId != 55884 && spell.SpellId != 483)
+                        mounts.emplace(uint32(spell.SpellId), id);
+            }
+        });
+        return mounts;
+    }
     constexpr uint32 NEWS_FAMOUS_GREET_CHANCE = 40;
 
     std::mutex SocialLock;
@@ -643,7 +694,8 @@ namespace
 BotChatter::BotChatter(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot),
     _greetTimer(urand(2000, 5000)), _idleTimer(urand(30000, 90000)), _socialTimer(MINUTE * IN_MILLISECONDS),
     _replyCategory(BOT_CHATTER_GREET_REPLY), _replyMode(BOT_CHATTER_REPLY_SAY), _replyTimer(0), _aiPendingUntil(0),
-    _stateEmote(0), _stateEmoteTimer(0), _delayedTextId(0), _delayedTimer(0), _emoteReaction(0), _emoteTimer(0)
+    _stateEmote(0), _stateEmoteTimer(0), _chainEmote(0), _chainDepth(0), _chainTimer(0), _delayedTextId(0),
+    _delayedTimer(0), _emoteReaction(0), _emoteTimer(0)
 {
 }
 
@@ -710,6 +762,21 @@ void BotChatter::Update(uint32 diff)
             _replyTimer -= diff;
     }
 
+    if (_chainTimer)
+    {
+        if (_chainTimer <= diff)
+        {
+            _chainTimer = 0;
+            if (CanChat(false) && !_me->IsInCombat())
+            {
+                PerformEmote(_chainEmote, nullptr);
+                SpreadEmote(_me, _chainEmote, _chainDepth);
+            }
+        }
+        else
+            _chainTimer -= diff;
+    }
+
     if (_delayedTimer)
     {
         if (_delayedTimer <= diff)
@@ -732,7 +799,7 @@ void BotChatter::Update(uint32 diff)
         _greetTimer = urand(2000, 4000);
         if (_me->IsInWorld() && _me->IsAlive() && _me->GetMap()->HavePlayers())
             ObservePlayers();
-        if (CanChat(true) && !TryGreetNearbyPlayer())
+        if (CanChat(true) && !TryGreetNearbyPlayer() && !TryCommentOnPlayer())
             GreetBotNearby();
     }
 
@@ -752,6 +819,9 @@ void BotChatter::Update(uint32 diff)
         _idleTimer = interval * IN_MILLISECONDS;
         if (CanChat(true) && roll_chance_i(BotCfg::GetBotChatterIdleChance()) &&
             !(roll_chance_i(NEWS_TALK_CHANCE) && TalkAboutNews()) &&
+            !(roll_chance_i(RUMOR_TALK_CHANCE) && TalkAboutRumor()) &&
+            !(roll_chance_i(LOOKS_TALK_CHANCE) && TalkAboutLooks()) &&
+            !(GetMood() == BOT_MOOD_CHEERFUL && roll_chance_i(DANCE_CHANCE) && StartDancing()) &&
             !(roll_chance_i(BOND_RIVAL_TALK_CHANCE) && TalkAboutRival()))
             Chatter(SelectIdleCategory(), nullptr, true);
     }
@@ -992,6 +1062,16 @@ void BotChatter::OnPlayerTextEmote(Player* player, uint32 textEmote, Unit const*
     // commands for the bot, see bot_ai::ReceiveEmote()
     if (targetBot && IsBotCommandEmote(textEmote))
         return;
+
+    // contests take sign-ups by /cheer, catchy emotes spread among the bots around
+    BotWorldEvents::OnPlayerEmote(player, textEmote);
+    if (!targetBot || !IsBotCommandEmote(textEmote))
+    {
+        if (textEmote == TEXT_EMOTE_TRAIN)
+            SpreadEmote(player, TEXT_EMOTE_LAUGH, EMOTE_CHAIN_MAX_DEPTH - 1);
+        else
+            SpreadEmote(player, textEmote, 0);
+    }
 
     float range = sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_TEXTEMOTE);
     std::list<Creature*> found;
@@ -1235,6 +1315,11 @@ void BotChatter::ProcessAIReplies()
             BotStoryArcs::OnArcGenerated(result);
             continue;
         }
+        if (result.kind == BOT_AI_KIND_VILLAIN)
+        {
+            BotVillains::OnVillainGenerated(result);
+            continue;
+        }
 
         Creature const* bot = BotDataMgr::FindBot(result.botEntry);
         if (bot && bot->GetBotAI())
@@ -1363,7 +1448,8 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
     }
 
     ss << GetRelationshipText(player) << GetBondsText()
-        << BotNews::GetNewsContext(BotDataMgr::GetTeamIdForFaction(_me->GetFaction()), player->GetGUID());
+        << BotNews::GetNewsContext(BotDataMgr::GetTeamIdForFaction(_me->GetFaction()), player->GetGUID())
+        << GetNotableText(player);
 
     ss << player->GetName() << ", a level " << uint32(player->GetLevel()) << ' '
         << GetEnglishRaceName(player->GetRace()) << ' ' << GetEnglishClassName(player->GetClass()) << ", talks to you ";
@@ -1730,6 +1816,201 @@ bool BotChatter::SayTextNearby(uint32 textId, WorldObject const* subject, TextVa
         return false;
     text.vars = std::move(vars);
     return SayNearby(text, subject, CHAT_MSG_MONSTER_SAY);
+}
+
+void BotChatter::SpreadEmote(WorldObject const* source, uint32 textEmote, uint8 depth)
+{
+    uint32 chance = GetEmoteChainChance(textEmote);
+    if (!chance || depth >= EMOTE_CHAIN_MAX_DEPTH || !BotCfg::IsBotEmoteChainsEnabled())
+        return;
+
+    std::list<Creature*> bots;
+    NearbyBotCheck check(source, EMOTE_CHAIN_RANGE);
+    Acore::CreatureListSearcher<NearbyBotCheck> searcher(source, bots, check);
+    Cell::VisitObjects(source, searcher, EMOTE_CHAIN_RANGE);
+
+    for (Creature* bot : bots)
+    {
+        if (bot == source || !bot->GetBotAI() || bot->IsInCombat())
+            continue;
+
+        BotChatter& chatter = bot->GetBotAI()->GetChatter();
+        if (chatter._chainTimer || chatter._stateEmoteTimer || !chatter.CanChat(false) || !roll_chance_i(chance))
+            continue;
+
+        // laughing at a train is not copied as a train
+        chatter._chainEmote = textEmote;
+        chatter._chainDepth = depth + 1;
+        chatter._chainTimer = urand(800, 3500);
+    }
+}
+
+// cheerful bots start dancing now and then, others may join
+bool BotChatter::StartDancing()
+{
+    if (!BotCfg::IsBotEmoteChainsEnabled() || _me->isMoving() ||
+        !HasPlayersInRange(sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_TEXTEMOTE)))
+        return false;
+
+    PerformEmote(TEXT_EMOTE_DANCE, nullptr);
+    SpreadEmote(_me, TEXT_EMOTE_DANCE, 0);
+    return true;
+}
+
+// pets and rare mounts are shown off
+bool BotChatter::TalkAboutLooks()
+{
+    if (!HasPlayersInRange(sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_SAY)))
+        return false;
+
+    LocaleConstant locale = GetChatterLocale();
+    if (Creature const* pet = _ai->GetActivity().GetVanityPet(); pet && roll_chance_i(50))
+    {
+        std::string name = pet->GetCreatureTemplate()->Name;
+        if (CreatureLocale const* creatureLocale = sObjectMgr->GetCreatureLocale(pet->GetEntry()))
+            ObjectMgr::GetLocaleString(creatureLocale->Name, locale, name);
+        return SayTextNearby(BOT_TEXT_PET_TALK, nullptr, { { "%pet", name } });
+    }
+
+    uint32 mount = _ai->GetActivity().GetRareMountSpell();
+    if (!mount || !_me->HasAura(mount))
+        return false;
+
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(mount);
+    if (!spell)
+        return false;
+    return SayTextNearby(BOT_TEXT_MOUNT_TALK, nullptr,
+        { { "%mount", spell->SpellName[sWorld->GetAvailableDbcLocale(locale)] } });
+}
+
+// a true rumor about a rare creature around
+bool BotChatter::TalkAboutRumor()
+{
+    std::string rumor = BotNews::GetRareRumor(_me);
+    if (rumor.empty())
+        return false;
+
+    ChatterText text;
+    text.raw = rumor;
+    return SayToZoneChannel(text, nullptr, false) || SayNearby(text, nullptr, CHAT_MSG_MONSTER_SAY);
+}
+
+bool BotChatter::TryCommentOnPlayer()
+{
+    if (!BotCfg::IsBotCommentsEnabled() || !roll_chance_i(COMMENT_CHANCE))
+        return false;
+
+    Player* player = nullptr;
+    Acore::AnyPlayerInObjectRangeCheck check(_me, COMMENT_RANGE, true, true);
+    Acore::PlayerSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(_me, player, check);
+    Cell::VisitObjects(_me, searcher, COMMENT_RANGE);
+    if (!player || player->IsInCombat() || _me->IsHostileTo(player) || player == _ai->GetBotOwner())
+        return false;
+
+    time_t now = GameTime::GetGameTime().count();
+    std::unordered_set<uint32> commented;
+    {
+        std::lock_guard<std::mutex> lock(CommentsLock);
+        auto cooldown = CommentCooldowns.find(player->GetGUID());
+        if (cooldown != CommentCooldowns.end() && cooldown->second > now)
+            return false;
+        commented = CommentedThings[player->GetGUID()];
+    }
+
+    // only remarkable things: legendary, then a rare mount or a fresh achievement, then epic and rare gear
+    uint32 textId = 0, thing = 0;
+    BotChatter::TextVars vars;
+
+    Item const* best = nullptr;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item const* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || proto->Quality < ITEM_QUALITY_RARE || proto->Quality > ITEM_QUALITY_LEGENDARY ||
+            commented.contains(proto->ItemId))
+            continue;
+        if (!best || proto->Quality > best->GetTemplate()->Quality ||
+            (proto->Quality == best->GetTemplate()->Quality && proto->ItemLevel > best->GetTemplate()->ItemLevel))
+            best = item;
+    }
+
+    if (best && best->GetTemplate()->Quality == ITEM_QUALITY_LEGENDARY)
+        textId = BOT_TEXT_COMMENT_ITEM_LEGENDARY, thing = best->GetEntry();
+
+    if (!textId && player->IsMounted())
+    {
+        for (AuraEffect const* aura : player->GetAuraEffectsByType(SPELL_AURA_MOUNTED))
+        {
+            auto mount = GetMountItems().find(aura->GetId());
+            if (mount != GetMountItems().end() && !commented.contains(mount->second))
+            {
+                textId = BOT_TEXT_COMMENT_MOUNT;
+                thing = mount->second;
+                break;
+            }
+        }
+    }
+
+    if (!textId && roll_chance_i(50))
+    {
+        for (auto const& [achievementId, data] : player->GetAchievementMgr()->GetCompletedAchievements())
+        {
+            AchievementEntry const* achievement = sAchievementStore.LookupEntry(achievementId);
+            if (!achievement || data.date + COMMENT_ACHIEVEMENT_MAX_AGE < now ||
+                achievement->points < COMMENT_ACHIEVEMENT_MIN_POINTS ||
+                (achievement->flags & ACHIEVEMENT_FLAG_COUNTER) ||
+                commented.contains(0x80000000 | achievementId))
+                continue;
+            textId = BOT_TEXT_COMMENT_ACHIEVEMENT;
+            thing = 0x80000000 | achievementId;
+            vars = { { "%achievement", achievement->name[sWorld->GetAvailableDbcLocale(GetChatterLocale())] } };
+            break;
+        }
+    }
+
+    if (!textId && best)
+    {
+        textId = best->GetTemplate()->Quality == ITEM_QUALITY_EPIC ? BOT_TEXT_COMMENT_ITEM_EPIC :
+            BOT_TEXT_COMMENT_ITEM;
+        thing = best->GetEntry();
+    }
+
+    if (!textId)
+        return false;
+
+    if (textId != BOT_TEXT_COMMENT_ACHIEVEMENT)
+        vars = { { "%item", BotWorldEvents::FormatItemLink(thing) } };
+
+    {
+        std::lock_guard<std::mutex> lock(CommentsLock);
+        CommentCooldowns[player->GetGUID()] = now + BotCfg::GetBotCommentsCooldown();
+        CommentedThings[player->GetGUID()].insert(thing);
+    }
+
+    if (!_me->isMoving())
+        _me->SetFacingToObject(player);
+    return SayTextNearby(textId, player, std::move(vars));
+}
+
+std::string BotChatter::GetNotableText(Player const* player)
+{
+    std::vector<ItemTemplate const*> items;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item const* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (uint32 quality = item->GetTemplate()->Quality;
+                quality >= ITEM_QUALITY_EPIC && quality <= ITEM_QUALITY_LEGENDARY)
+                items.push_back(item->GetTemplate());
+    if (items.empty())
+        return "";
+
+    std::ranges::sort(items, std::ranges::greater{}, &ItemTemplate::ItemLevel);
+    std::ostringstream ss;
+    ss << "Notable gear of " << player->GetName() << ":";
+    for (std::size_t i = 0; i < items.size() && i < 2; ++i)
+        ss << (i ? ", " : " ") << items[i]->Name1
+            << (items[i]->Quality == ITEM_QUALITY_LEGENDARY ? " (legendary)" : " (epic)");
+    ss << ". ";
+    return ss.str();
 }
 
 // what players did lately is talked about in General
@@ -2387,6 +2668,8 @@ bool BotChatter::SayRaw(std::string const& rawText, ChatMsg msgType, Player* tar
             return SayNearby(text, target, msgType);
         case CHAT_MSG_WHISPER:
             return target && target->GetSession() && WhisperTo(text, target);
+        case CHAT_MSG_CHANNEL:
+            return SayToZoneChannel(text, target, true);
         default:
             return false;
     }

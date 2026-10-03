@@ -5576,6 +5576,29 @@ NpcBot.WanderingBots.Activities.RoleplayChance = 10
 NpcBot.WanderingBots.Activities.GatherChance = 10
 
 #
+#    NpcBot.WanderingBots.VanityPets.Enable
+#        Description: Some free wandering bots (about 30%, always the same ones) have a vanity pet following
+#                     them and some ride a rare mount (Swift Zulian Tiger, Raven Lord, mammoths...). They show
+#                     them off now and then.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.WanderingBots.VanityPets.Enable = 1
+
+#
+#    NpcBot.WanderingBots.Contests.Enable
+#    NpcBot.WanderingBots.Contests.Interval
+#        Description: Bots near a player hold a race to a spot 120-300 yards away (players next to the start
+#                     take part, on foot) or, at an inn, a drinking contest or arm wrestling (players /cheer to
+#                     sign up). Winners among the players get a small prize and the news spread.
+#                     Interval: seconds between contests around a player (randomized).
+#        Default:     1    - (NpcBot.WanderingBots.Contests.Enable)
+#                     2400 - (NpcBot.WanderingBots.Contests.Interval)
+
+NpcBot.WanderingBots.Contests.Enable   = 1
+NpcBot.WanderingBots.Contests.Interval = 2400
+
+#
 #    NpcBot.WanderingBots.GroupFinder.Enable
 #    NpcBot.WanderingBots.GroupFinder.Interval
 #    NpcBot.WanderingBots.GroupFinder.Chance
@@ -5742,6 +5765,45 @@ NpcBot.Chatter.News.Enable = 1
 
 NpcBot.Chatter.OpenAI.StoryArcs.Enable   = 1
 NpcBot.Chatter.OpenAI.StoryArcs.Interval = 7200
+
+#
+#    NpcBot.Chatter.OpenAI.Villains.Enable
+#    NpcBot.Chatter.OpenAI.Villains.Strength
+#        Description: Recurring villains: OpenAI makes up a title, a cult and a backstory for a named elite
+#                     creature of the Scourge, the Legion or raiders, living in a lair in a player's zone
+#                     (level 15+, one villain per map and level range). Its followers show up in invasions and
+#                     story arcs; every won invasion or finished story arc weakens it. After Strength defeats of
+#                     its followers it shows itself at its lair when a player comes close, with waves of
+#                     followers. Defeated, the news spread; escaped, it comes back later. OpenAI is asked once
+#                     per villain and only while a player is online. Needs NpcBot.Chatter.OpenAI.Enable.
+#        Default:     1 - (NpcBot.Chatter.OpenAI.Villains.Enable)
+#                     5 - (NpcBot.Chatter.OpenAI.Villains.Strength)
+
+NpcBot.Chatter.OpenAI.Villains.Enable   = 1
+NpcBot.Chatter.OpenAI.Villains.Strength = 5
+
+#
+#    NpcBot.Chatter.Comments.Enable
+#    NpcBot.Chatter.Comments.Cooldown
+#        Description: Bots next to a player comment on remarkable things only: legendary, epic and rare gear,
+#                     a rare or better mount or an achievement earned in the last two days, each thing once.
+#                     Cooldown: seconds before any bot comments on the same player again. OpenAI also knows
+#                     the player's epic and legendary gear.
+#        Default:     1    - (NpcBot.Chatter.Comments.Enable)
+#                     1800 - (NpcBot.Chatter.Comments.Cooldown)
+
+NpcBot.Chatter.Comments.Enable   = 1
+NpcBot.Chatter.Comments.Cooldown = 1800
+
+#
+#    NpcBot.Chatter.EmoteChains.Enable
+#        Description: Catchy emotes spread: bots around copy a dance, a cheer, applause or laughter of a
+#                     player or another bot a moment later, a /train makes them laugh, cheerful bots start
+#                     dancing now and then.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.Chatter.EmoteChains.Enable = 1
 
 #
 #    NpcBot.Guilds.Enable

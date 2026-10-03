@@ -4,6 +4,7 @@
 #include "botconfig.h"
 #include "botdatamgr.h"
 #include "botdefine.h"
+#include "botmemory.h"
 #include "bottext.h"
 #include "botworldevents.h"
 #include "CellImpl.h"
@@ -15,6 +16,8 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "SpellMgr.h"
+#include "TemporarySummon.h"
 
 /*
 NpcBot Activities, see botactivity.h
@@ -51,6 +54,26 @@ namespace
     constexpr uint32 GATHER_MAX_TRAVEL_TIME = 40 * IN_MILLISECONDS;
     constexpr uint32 ITEM_FISHING_POLE = 6256;
     constexpr uint32 GO_FISHING_BOBBER = 35591;
+    constexpr uint32 VANITY_PET_CHECK_DELAY = 5 * IN_MILLISECONDS;
+    constexpr uint32 VANITY_PET_LIFETIME = 10 * MINUTE * IN_MILLISECONDS;
+    constexpr uint32 VANITY_PET_CHANCE = 30;        // % of bots having one
+    constexpr uint32 RARE_MOUNT_CHANCE = 25;        // % of bots riding a rare mount
+
+    // companions of the vanity pet items
+    constexpr std::array VanityPets =
+    {
+        7380u, 7381u, 7382u, 7383u, 7384u, 7385u, 7386u, 7387u, 7389u, 7390u, 7391u, 7395u, 7543u, 7544u, 7545u,
+        7547u, 7549u, 7550u, 7553u, 7554u, 7555u, 7560u, 7561u, 7562u, 7565u, 7567u, 2671u, 9656u, 9657u, 9662u,
+        10259u, 10598u, 12419u, 14421u
+    };
+
+    // rare and prestigious ground mounts any faction may ride, then alliance and horde only ones
+    constexpr std::array RareMountsAny =
+    {
+        17481u, 24242u, 24252u, 36702u, 41252u, 43688u, 49322u, 43900u, 46628u
+    };
+    constexpr std::array RareMountsAlliance = { 60114u, 61425u, 59785u, 22719u, 23510u, 16056u, 17229u, 63232u };
+    constexpr std::array RareMountsHorde = { 60116u, 61447u, 59788u, 22718u, 23509u, 16081u, 63640u };
 
     // a herb or an ore vein, by the skill its lock needs
     bool GetNodeGatherKind(GameObject const* go, BotGatherKind& kind)
@@ -130,12 +153,15 @@ BotActivity::BotActivity(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot), _mode(B
     _decisionTimer(0), _modeTimer(0), _requested(false), _seated(false), _phase(ROLEPLAY_GATHER), _phaseTimer(0),
     _story(0), _storyLine(0), _storiesLeft(0), _storyLength(0), _storyLinesTold(0), _storyWaiting(false),
     _storyEnding(false), _storyTimer(0), _eventId(0), _eventAttack(false), _eventMoveTimer(0),
-    _companionMounted(false), _gatherKind(BOT_GATHER_FISHING), _gatherWorking(false), _gatherTimer(0), _gatherOldItem(0)
+    _companionMounted(false), _gatherKind(BOT_GATHER_FISHING), _gatherWorking(false), _gatherTimer(0),
+    _gatherOldItem(0), _vanityPetTimer(urand(1000, 5000))
 {
 }
 
 void BotActivity::Update(uint32 diff)
 {
+    UpdateVanityPet(diff);
+
     // world events run without the activities config, a hired bot or a teleport ends them
     if (_mode == BOT_ACTIVITY_EVENT || _mode == BOT_ACTIVITY_COMPANION)
     {
@@ -444,6 +470,90 @@ void BotActivity::UpdateCompanion(uint32 diff)
         leader->GetPositionY() + COMPANION_FOLLOW_DISTANCE * std::sin(angle), leader->GetPositionZ());
     _me->UpdateAllowedPositionZ(pos.m_positionX, pos.m_positionY, pos.m_positionZ);
     _ai->BotMovement(BOT_MOVE_POINT, &pos, nullptr, true);
+}
+
+// stable per bot (persona): the same bot keeps its pet and mount after a restart
+uint32 BotActivity::GetLooksSeed() const
+{
+    return BotMemory::GetSocialKey(_me->GetEntry()) * 2654435761u;
+}
+
+uint32 BotActivity::GetRareMountSpell() const
+{
+    uint32 seed = GetLooksSeed();
+    if (!_ai->IsWanderer() || !_ai->IAmFree() || (seed >> 8) % 100 >= RARE_MOUNT_CHANCE)
+        return 0;
+
+    std::vector<uint32> mounts(RareMountsAny.begin(), RareMountsAny.end());
+    switch (BotDataMgr::GetTeamIdForFaction(_me->GetFaction()))
+    {
+        case TEAM_ALLIANCE: mounts.insert(mounts.end(), RareMountsAlliance.begin(), RareMountsAlliance.end()); break;
+        case TEAM_HORDE:    mounts.insert(mounts.end(), RareMountsHorde.begin(), RareMountsHorde.end());       break;
+        default:                                                                                              break;
+    }
+    uint32 spellId = mounts[(seed >> 16) % mounts.size()];
+    return sSpellMgr->GetSpellInfo(spellId) ? spellId : 0;
+}
+
+Creature* BotActivity::GetVanityPet() const
+{
+    return _vanityPet.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*_me, _vanityPet);
+}
+
+// free wandering bots with a pet have it following them, out of fights and instances it stays away
+void BotActivity::UpdateVanityPet(uint32 diff)
+{
+    if (_vanityPetTimer > diff)
+    {
+        _vanityPetTimer -= diff;
+        return;
+    }
+    _vanityPetTimer = VANITY_PET_CHECK_DELAY;
+
+    uint32 seed = GetLooksSeed();
+    bool wanted = BotCfg::IsBotVanityPetsEnabled() && (seed >> 4) % 100 < VANITY_PET_CHANCE && _me->IsInWorld() &&
+        _me->IsAlive() && _ai->IsWanderer() && _ai->IAmFree() && !_ai->IsDuringTeleport() &&
+        _me->GetMap()->GetEntry()->IsContinent() && !_me->IsInCombat();
+
+    Creature* pet = GetVanityPet();
+    if (!wanted)
+    {
+        if (pet || !_vanityPet.IsEmpty())
+            DespawnVanityPet();
+        return;
+    }
+
+    if (pet)
+    {
+        // keeps up with its owner, far behind it comes back
+        if (!pet->IsWithinDistInMap(_me, 40.0f))
+            pet->NearTeleportTo(_me->GetPositionX(), _me->GetPositionY(), _me->GetPositionZ(), _me->GetOrientation());
+        return;
+    }
+
+    uint32 entry = VanityPets[(seed >> 12) % VanityPets.size()];
+    if (!sObjectMgr->GetCreatureTemplate(entry))
+        return;
+
+    Position pos = _me->GetNearPosition(1.5f, float(M_PI) * 0.75f);
+    // limited lifetime: a pet left behind by a despawned owner goes away on its own, a new one comes
+    TempSummon* summon = _me->SummonCreature(entry, pos, TEMPSUMMON_TIMED_DESPAWN, VANITY_PET_LIFETIME);
+    if (!summon)
+        return;
+
+    summon->SetFaction(_me->GetFaction());
+    summon->SetReactState(REACT_PASSIVE);
+    summon->SetUnitFlag(UnitFlags(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC));
+    summon->SetOwnerGUID(_me->GetGUID());
+    summon->GetMotionMaster()->MoveFollow(_me, 1.5f, float(M_PI) * 0.75f);
+    _vanityPet = summon->GetGUID();
+}
+
+void BotActivity::DespawnVanityPet()
+{
+    if (Creature* pet = GetVanityPet())
+        pet->DespawnOrUnsummon();
+    _vanityPet.Clear();
 }
 
 bool BotActivity::StartGather()

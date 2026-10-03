@@ -142,6 +142,14 @@ public:
     static bool IsBotStoryArcsEnabled();
     static uint32 GetBotStoryArcsInterval();
     static uint32 GetBotActivitiesGatherChance();
+    static bool IsBotVillainsEnabled();
+    static uint32 GetBotVillainsStrength();
+    static bool IsBotContestsEnabled();
+    static uint32 GetBotContestsInterval();
+    static bool IsBotCommentsEnabled();
+    static uint32 GetBotCommentsCooldown();
+    static bool IsBotEmoteChainsEnabled();
+    static bool IsBotVanityPetsEnabled();
     static bool IsBotGuildsEnabled();
     static std::string const& GetBotChatterLocale();
     static bool IsBotOpenAIEnabled();

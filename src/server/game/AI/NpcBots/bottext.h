@@ -545,6 +545,39 @@ enum BotTexts : uint32
     BOT_TEXT_ARC_FAILED                     = 71097, //system: "[%title] Try again at %place."
     //71098-71100 reserved for bot chatter texts
     //71101-71200 campfire stories: lines 71101+2k, listener reactions 71102+2k, see botactivity.h
+    // more bot chatter texts: 71201-71300
+    BOT_TEXT_COMMENT_ITEM                   = 71201, //say: "Nice %item, %target!"
+    BOT_TEXT_COMMENT_ITEM_EPIC              = 71202, //say: "Is that %item? Impressive!"
+    BOT_TEXT_COMMENT_ITEM_LEGENDARY         = 71203, //say: "By the Light... %item!"
+    BOT_TEXT_COMMENT_MOUNT                  = 71204, //say: "What a beautiful %item, %target!"
+    BOT_TEXT_COMMENT_ACHIEVEMENT            = 71205, //say: "Congratulations on %achievement, %target!"
+    BOT_TEXT_PET_TALK                       = 71206, //say: "Isn't my %pet adorable?"
+    BOT_TEXT_MOUNT_TALK                     = 71207, //say: "Have you seen my %mount?"
+    BOT_TEXT_RUMOR_RARE                     = 71208, //"They say %enemy has been seen near %place."
+    BOT_TEXT_CONTEST_RACE_CALL              = 71209, //yell: "A race to %place!"
+    BOT_TEXT_CONTEST_RACE_GO                = 71210, //yell: "Ready... set... GO!"
+    BOT_TEXT_CONTEST_RACE_WINNER            = 71211, //yell: "%winner wins the race to %place!"
+    BOT_TEXT_CONTEST_NO_WINNER              = 71212, //say: "Nobody made it."
+    BOT_TEXT_CONTEST_DRINK_CALL             = 71213, //say: "Drinking contest! /cheer to join"
+    BOT_TEXT_CONTEST_DRINK_ROUND            = 71214, //say: "Another round!"
+    BOT_TEXT_CONTEST_DRINK_OUT              = 71215, //say: "*hic* I'm done."
+    BOT_TEXT_CONTEST_DRINK_WINNER           = 71216, //say: "%winner drank everyone under the table!"
+    BOT_TEXT_CONTEST_ARM_CALL               = 71217, //say: "Arm wrestling! /cheer to join"
+    BOT_TEXT_CONTEST_ARM_WINNER             = 71218, //say: "%winner wins the arm wrestling!"
+    BOT_TEXT_CONTEST_PRIZE                  = 71219, //whisper: "Here is your prize: %price."
+    BOT_TEXT_CONTEST_DISQUALIFIED           = 71220, //whisper: "No mounts in this race!"
+    BOT_TEXT_CONTEST_PLAYER_OUT             = 71221, //system: "You can't take another drop."
+    BOT_TEXT_VILLAIN_PROGRESS               = 71222, //General: "%cult is losing ground."
+    BOT_TEXT_VILLAIN_SIGHTED                = 71223, //General: "%villain %title has been sighted at %place!"
+    BOT_TEXT_VILLAIN_DEFEATED               = 71224, //General: "%villain %title has fallen!"
+    BOT_TEXT_VILLAIN_ESCAPED                = 71225, //General: "%villain %title escaped."
+    BOT_TEXT_DEED_VILLAIN                   = 71226, //"%player defeated %subject at %place."
+    BOT_TEXT_DEED_CONTEST                   = 71227, //"%player won %subject at %place."
+    BOT_TEXT_CONTEST_NAME_RACE              = 71228, //"a race"
+    BOT_TEXT_CONTEST_NAME_DRINKING          = 71229, //"a drinking contest"
+    BOT_TEXT_CONTEST_NAME_ARM               = 71230, //"an arm wrestling match"
+    BOT_TEXT_CONTEST_ARM_ROUND              = 71231, //say: "Hnngh...!"
+    //71232-71300 reserved for bot chatter texts
 };
 
 #endif //BOTTEXT_H

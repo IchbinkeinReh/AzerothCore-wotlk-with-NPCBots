@@ -6,6 +6,8 @@
 #include "botdefine.h"
 #include "botmgr.h"
 #include "botnews.h"
+#include "botvillains.h"
+#include "botwanderful.h"
 #include "bottext.h"
 #include "botworldevents.h"
 #include "CellImpl.h"
@@ -93,6 +95,25 @@ namespace
     constexpr time_t FINISHED_EVENT_KEEP_TIME = 30 * MINUTE;
     constexpr float STORY_BATTLE_RECRUIT_RANGE = 300.0f;
     constexpr float STORY_CAMP_RANGE = 200.0f;
+    constexpr float CONTEST_SPACING = 300.0f;
+    constexpr float CONTEST_INN_RANGE = 30.0f;
+    constexpr float CONTEST_RECRUIT_RANGE = 60.0f;
+    constexpr float CONTEST_ORGANIZER_RANGE = 40.0f;
+    constexpr float CONTEST_RACE_MIN_DISTANCE = 120.0f;
+    constexpr float CONTEST_RACE_MAX_DISTANCE = 300.0f;
+    constexpr float CONTEST_START_RANGE = 15.0f;
+    constexpr float CONTEST_FINISH_RANGE = 6.0f;
+    constexpr time_t CONTEST_SIGN_UP_TIME = 30;
+    constexpr time_t CONTEST_RACE_TIME = 3 * MINUTE;
+    constexpr time_t CONTEST_INN_TIME = 3 * MINUTE;
+    constexpr time_t CONTEST_ROUND_TIME = 6;
+    constexpr time_t CONTEST_ARM_ROUND_TIME = 3;
+    constexpr uint32 CONTEST_ARM_ROUNDS = 3;
+    constexpr uint32 CONTEST_MAX_ROUNDS = 8;
+    constexpr uint32 CONTEST_DROP_OUT_CHANCE = 25;
+    constexpr time_t CHEER_KEEP_TIME = 2 * MINUTE;
+    constexpr uint32 VILLAIN_LIFETIME = 30 * MINUTE * IN_MILLISECONDS;
+    constexpr time_t VILLAIN_BATTLE_TIME = 15 * MINUTE;
 
     enum OfferType : uint8
     {
@@ -154,6 +175,9 @@ namespace
 
         // a story arc's battle (botstoryarcs.h): no announcements, no deeds
         bool story = false;
+        // invaders following a villain (botvillains.h), or the villain's own last stand
+        uint32 villainFollowers = 0;
+        uint32 villainId = 0;
 
         // objective
         uint32 zoneId = 0;
@@ -169,6 +193,7 @@ namespace
         time_t nextEvent = 0;
         time_t nextRaidOffer = 0;
         time_t nextInvasion = 0;
+        time_t nextContest = 0;
     };
 
     struct WorldBoss
@@ -1171,27 +1196,37 @@ namespace
 
         // invaders around the player's level
         uint8 level = player->GetLevel();
-        std::vector<std::pair<uint32, std::vector<uint32>>> themes;
-        for (InvaderTheme const& theme : GetInvaderThemes())
+        std::vector<std::pair<uint8, std::vector<uint32>>> themes;
+        for (uint8 index = 0; index < GetInvaderThemes().size(); ++index)
         {
-            std::vector<uint32> entries;
-            for (CreatureTemplate const* proto : theme.creatures)
-                if (proto->minlevel <= uint32(level) + 1 && proto->maxlevel + 2 >= uint32(level))
-                    entries.push_back(proto->Entry);
+            std::vector<uint32> entries = BotWorldEvents::GetInvaderEntries(index, level);
             if (entries.size() >= 2)
-                themes.emplace_back(theme.nameTextId, std::move(entries));
+                themes.emplace_back(index, std::move(entries));
         }
         if (themes.empty())
             return;
 
-        auto& [nameTextId, entries] = Acore::Containers::SelectRandomContainerElement(themes);
+        // a villain around sends its followers more often than not
+        auto chosen = &themes[urand(0, uint32(themes.size()) - 1)];
+        BotVillainRef villain;
+        for (auto& theme : themes)
+            if (BotVillains::GetVillainFor(theme.first, level, player->GetMapId(), villain) && roll_chance_i(70))
+            {
+                chosen = &theme;
+                break;
+            }
+        if (villain.id && !BotVillains::GetVillainFor(chosen->first, level, player->GetMapId(), villain))
+            villain = {};
+        uint32 nameTextId = GetInvaderThemes()[chosen->first].nameTextId;
+        std::vector<uint32>& entries = chosen->second;
 
         WorldEvent event;
         event.id = NextEventId++;
         event.type = EVENT_INVASION;
         event.mapId = player->GetMapId();
         event.target.Relocate(anchor);
-        event.enemyName = BotChatter::GetServerText(nameTextId);
+        event.enemyName = villain.id ? villain.cult : BotChatter::GetServerText(nameTextId);
+        event.villainFollowers = villain.id;
         event.invaderEntries = std::move(entries);
         event.wavesLeft = std::max<uint32>(BotCfg::GetBotInvasionsWaves(), 1);
         event.attackAt = Now() + INVASION_FIRST_WAVE_DELAY;
@@ -1390,7 +1425,7 @@ namespace
         std::string subject = event.enemyName;
         switch (event.type)
         {
-            case EVENT_INVASION:  type = BOT_DEED_TOWN_DEFENDED;   break;
+            case EVENT_INVASION:  type = event.villainId ? BOT_DEED_VILLAIN : BOT_DEED_TOWN_DEFENDED; break;
             case EVENT_HUNT:      type = BOT_DEED_RARE_SLAIN;      break;
             case EVENT_OBJECTIVE: type = BOT_DEED_OBJECTIVE_TAKEN; break;
             default:              type = BOT_DEED_CAMP_RAIDED;     break;
@@ -1421,6 +1456,8 @@ namespace
         FinishedEvents[event.id] = { victory, Now() };
         if (victory)
             RecordEventDeeds(event);
+        if (victory && event.villainFollowers)
+            BotVillains::OnFollowersDefeated(event.villainFollowers);
 
         Creature* leader = nullptr;
         std::vector<Creature*> survivors;
@@ -1461,7 +1498,8 @@ namespace
                     if (Creature* invader = map->GetCreature(guid); invader && invader->IsAlive())
                         invader->DespawnOrUnsummon();
 
-        if (leader && !leader->IsInCombat())
+        // the villain's fate is told by BotVillains
+        if (leader && !leader->IsInCombat() && !event.villainId)
         {
             uint32 textId;
             ChatMsg msgType = CHAT_MSG_MONSTER_SAY;
@@ -1565,7 +1603,17 @@ namespace
                     if (Creature* invader = map->GetCreature(guid); invader && invader->IsAlive())
                         enemies.push_back(invader);
 
-                if (enemies.empty() && !event.wavesLeft)
+                // the villain's last stand ends with the villain
+                if (event.villainId)
+                {
+                    Creature const* villain = map->GetCreature(event.rare);
+                    if (!villain || !villain->IsAlive())
+                    {
+                        EndEvent(event, villain != nullptr);
+                        return false;
+                    }
+                }
+                else if (enemies.empty() && !event.wavesLeft)
                 {
                     EndEvent(event, true);
                     return false;
@@ -1964,6 +2012,433 @@ namespace
         return true;
     }
 
+    // races, drinking contests and arm wrestling, players take part and win small prizes
+    enum ContestType : uint8
+    {
+        CONTEST_RACE = 0,
+        CONTEST_DRINKING,
+        CONTEST_ARM_WRESTLING
+    };
+
+    struct Contest
+    {
+        uint32 id = 0;              // also the event id of the bots taking part (BotActivity::JoinEvent)
+        ContestType type = CONTEST_RACE;
+        uint32 mapId = 0;
+        Position start;
+        Position finish;
+        std::string place;
+        uint32 organizer = 0;
+        std::vector<uint32> bots;
+        std::vector<ObjectGuid> players;
+        std::vector<uint32> botsOut;
+        std::vector<ObjectGuid> playersOut;
+        time_t signUpUntil = 0;
+        time_t endAt = 0;
+        time_t nextRound = 0;
+        uint32 round = 0;
+        bool running = false;
+    };
+
+    struct Cheer
+    {
+        ObjectGuid player;
+        uint32 mapId;
+        float x;
+        float y;
+        time_t time;
+    };
+
+    std::vector<Contest> Contests;
+    std::mutex CheersLock;
+    std::vector<Cheer> Cheers;
+
+    uint32 ContestNameTextId(ContestType type)
+    {
+        switch (type)
+        {
+            case CONTEST_RACE:     return BOT_TEXT_CONTEST_NAME_RACE;
+            case CONTEST_DRINKING: return BOT_TEXT_CONTEST_NAME_DRINKING;
+            default:               return BOT_TEXT_CONTEST_NAME_ARM;
+        }
+    }
+
+    bool IsContestNear(uint32 mapId, Position const& pos)
+    {
+        for (Contest const& contest : Contests)
+            if (contest.mapId == mapId && contest.start.GetExactDist2d(pos) < CONTEST_SPACING)
+                return true;
+        return false;
+    }
+
+    // a friendly innkeeper next to the player
+    Creature* FindInnkeeper(Player* player)
+    {
+        struct InnkeeperCheck
+        {
+            InnkeeperCheck(Player const* player) : _player(player) { }
+
+            bool operator()(Creature* creature) const
+            {
+                return creature->IsAlive() && !creature->IsNPCBot() && creature->HasNpcFlag(UNIT_NPC_FLAG_INNKEEPER) &&
+                    creature->IsFriendlyTo(_player) && _player->IsWithinDistInMap(creature, CONTEST_INN_RANGE);
+            }
+
+        private:
+            Player const* _player;
+        };
+
+        Creature* innkeeper = nullptr;
+        InnkeeperCheck check(player);
+        Acore::CreatureSearcher<InnkeeperCheck> searcher(player, innkeeper, check);
+        Cell::VisitObjects(player, searcher, CONTEST_INN_RANGE);
+        return innkeeper;
+    }
+
+    std::string AreaName(Map* map, Position const& pos)
+    {
+        uint32 areaId = map->GetAreaId(PHASEMASK_NORMAL, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ());
+        std::string name = ZoneName(areaId);
+        if (name.empty())
+            name = ZoneName(map->GetZoneId(PHASEMASK_NORMAL, pos.GetPositionX(), pos.GetPositionY(),
+                pos.GetPositionZ()));
+        return name;
+    }
+
+    void TryContest(Player* player, PlayerTimers& timers)
+    {
+        if (!BotCfg::IsBotContestsEnabled() || timers.nextContest > Now())
+            return;
+        if (player->GetLevel() < MIN_WORLD_EVENT_LEVEL || IsInCombatWithCreatures(player) ||
+            !player->GetMap()->GetEntry()->IsContinent() || !player->IsAlive() || player->IsGameMaster() ||
+            player->IsInFlight() || IsContestNear(player->GetMapId(), player->GetPosition()))
+            return;
+
+        timers.nextContest = NextTime(BotCfg::GetBotContestsInterval());
+
+        std::vector<Creature*> bots = FindWanderers(player, CONTEST_RECRUIT_RANGE, false);
+        std::erase_if(bots, [](Creature const* bot) { return bot->IsInCombat(); });
+        if (bots.empty() || player->GetExactDist2d(bots.front()) > CONTEST_ORGANIZER_RANGE)
+            return;
+
+        Contest contest;
+        contest.id = NextEventId++;
+        contest.mapId = player->GetMapId();
+        Map* map = player->GetMap();
+
+        uint32 maxBots;
+        if (Creature const* innkeeper = FindInnkeeper(player))
+        {
+            contest.type = roll_chance_i(60) ? CONTEST_DRINKING : CONTEST_ARM_WRESTLING;
+            contest.start.Relocate(bots.front());
+            contest.place = AreaName(map, innkeeper->GetPosition());
+            maxBots = contest.type == CONTEST_DRINKING ? 3 : 2;
+        }
+        else
+        {
+            // the finish line: a waypoint of the wandering bots a bit away
+            std::vector<WanderNode const*> finishes;
+            WanderNode::DoForAllMapWPs(player->GetMapId(), [player, &finishes](WanderNode const* node) {
+                float dist = player->GetExactDist2d(node);
+                if (dist >= CONTEST_RACE_MIN_DISTANCE && dist <= CONTEST_RACE_MAX_DISTANCE &&
+                    std::abs(node->GetPositionZ() - player->GetPositionZ()) < 40.0f)
+                    finishes.push_back(node);
+            });
+            if (finishes.empty())
+                return;
+
+            contest.type = CONTEST_RACE;
+            contest.start.Relocate(bots.front());
+            contest.finish.Relocate(*Acore::Containers::SelectRandomContainerElement(finishes));
+            contest.place = AreaName(map, contest.finish);
+            maxBots = 4;
+        }
+        if (contest.place.empty())
+            return;
+
+        for (Creature* bot : bots)
+        {
+            if (bot->GetBotAI()->GetActivity().JoinEvent(contest.id, contest.start))
+                contest.bots.push_back(bot->GetEntry());
+            if (contest.bots.size() >= maxBots)
+                break;
+        }
+        if (contest.bots.empty())
+            return;
+
+        contest.organizer = contest.bots.front();
+        contest.signUpUntil = Now() + CONTEST_SIGN_UP_TIME;
+
+        Creature* organizer = GetBot(contest.organizer);
+        BotChatter::TextVars vars{ { "%place", contest.place } };
+        switch (contest.type)
+        {
+            case CONTEST_RACE:
+                organizer->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_RACE_CALL, vars, CHAT_MSG_MONSTER_YELL,
+                    player);
+                break;
+            case CONTEST_DRINKING:
+                organizer->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_DRINK_CALL, vars, CHAT_MSG_MONSTER_YELL,
+                    player);
+                break;
+            default:
+                organizer->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_ARM_CALL, vars, CHAT_MSG_MONSTER_YELL,
+                    player);
+                break;
+        }
+
+        BOT_LOG_DEBUG("npcbots", "Contest {} type {} near {} at {}", contest.id, uint32(contest.type),
+            player->GetName(), contest.place);
+        Contests.push_back(std::move(contest));
+    }
+
+    void EndContest(Contest& contest, Creature* organizer, WorldObject const* winner)
+    {
+        Map* map = sMapMgr->FindBaseMap(contest.mapId);
+        if (organizer && organizer->IsInWorld())
+        {
+            uint32 textId = !winner ? BOT_TEXT_CONTEST_NO_WINNER : contest.type == CONTEST_RACE ?
+                BOT_TEXT_CONTEST_RACE_WINNER : contest.type == CONTEST_DRINKING ? BOT_TEXT_CONTEST_DRINK_WINNER :
+                BOT_TEXT_CONTEST_ARM_WINNER;
+            BotChatter::TextVars vars{ { "%winner", winner ? winner->GetName() : "" }, { "%place", contest.place } };
+            BotChatter& chatter = organizer->GetBotAI()->GetChatter();
+            // a race ends far from the start: the zone hears about it
+            if (!(contest.type == CONTEST_RACE && winner && chatter.Announce(textId, vars, CHAT_MSG_CHANNEL)))
+                chatter.Announce(textId, std::move(vars), CHAT_MSG_MONSTER_YELL);
+        }
+
+        if (Player* player = winner ? const_cast<Player*>(winner->ToPlayer()) : nullptr)
+        {
+            uint32 prize = std::max<uint32>(player->GetLevel() * player->GetLevel() * 5, 50);
+            player->ModifyMoney(int32(prize));
+            if (organizer && organizer->IsInWorld())
+                organizer->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_PRIZE,
+                    { { "%price", MoneyString(prize) } }, CHAT_MSG_WHISPER, player);
+            BotNews::RecordDeed(player, BOT_DEED_CONTEST, BotChatter::GetServerText(ContestNameTextId(contest.type)),
+                contest.place, map ? map->GetZoneId(PHASEMASK_NORMAL, contest.start.GetPositionX(),
+                contest.start.GetPositionY(), contest.start.GetPositionZ()) : 0);
+        }
+
+        for (uint32 entry : contest.bots)
+            if (Creature* bot = GetBot(entry); bot && bot->GetBotAI() &&
+                bot->GetBotAI()->GetActivity().GetEventId() == contest.id)
+                bot->GetBotAI()->GetActivity().Stop();
+    }
+
+    // returns false when the contest is over
+    bool UpdateContest(Contest& contest)
+    {
+        std::erase_if(contest.bots, [&contest](uint32 entry) {
+            Creature* bot = GetBot(entry);
+            return !bot || !bot->IsInWorld() || !bot->IsAlive() || bot->GetMapId() != contest.mapId ||
+                !bot->GetBotAI() || bot->GetBotAI()->GetActivity().GetEventId() != contest.id;
+        });
+        std::erase_if(contest.players, [](ObjectGuid guid) {
+            Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+            return !player || !player->IsInWorld() || !player->IsAlive();
+        });
+
+        Creature* organizer = GetBot(contest.organizer);
+        if (organizer && (!organizer->IsInWorld() || organizer->GetMapId() != contest.mapId))
+            organizer = nullptr;
+
+        time_t now = Now();
+        if (!contest.running)
+        {
+            if (!organizer)
+            {
+                EndContest(contest, nullptr, nullptr);
+                return false;
+            }
+            if (now < contest.signUpUntil)
+                return true;
+
+            // players next to the start (race) or who cheered to sign up (inn contests)
+            Map* map = organizer->GetMap();
+            Map::PlayerList const& players = map->GetPlayers();
+            {
+                std::lock_guard<std::mutex> lock(CheersLock);
+                for (Map::PlayerList::const_iterator itr = players.begin(); itr != players.end(); ++itr)
+                {
+                    Player* player = itr->GetSource();
+                    if (!player || !player->IsAlive() || player->IsGameMaster() || organizer->IsHostileTo(player))
+                        continue;
+                    bool joined = contest.type == CONTEST_RACE ?
+                        player->GetExactDist2d(contest.start) <= CONTEST_START_RANGE :
+                        std::ranges::any_of(Cheers, [&contest, player](Cheer const& cheer) {
+                            return cheer.player == player->GetGUID() && cheer.mapId == contest.mapId &&
+                                contest.start.GetExactDist2d(cheer.x, cheer.y) <= CONTEST_START_RANGE &&
+                                cheer.time + CONTEST_SIGN_UP_TIME + 5 >= contest.signUpUntil;
+                        });
+                    if (joined)
+                        contest.players.push_back(player->GetGUID());
+                }
+            }
+
+            // arm wrestling: the organizer against one challenger
+            if (contest.type == CONTEST_ARM_WRESTLING)
+            {
+                if (!contest.players.empty())
+                {
+                    contest.players.resize(1);
+                    contest.bots = { contest.organizer };
+                }
+                else if (contest.bots.size() > 2)
+                    contest.bots.resize(2);
+            }
+
+            if (contest.bots.size() + contest.players.size() < 2)
+            {
+                EndContest(contest, organizer, nullptr);
+                return false;
+            }
+
+            contest.running = true;
+            contest.nextRound = now;
+            contest.endAt = now + (contest.type == CONTEST_RACE ? CONTEST_RACE_TIME : CONTEST_INN_TIME);
+            if (contest.type == CONTEST_RACE)
+            {
+                organizer->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_RACE_GO, {}, CHAT_MSG_MONSTER_YELL);
+                for (uint32 entry : contest.bots)
+                    GetBot(entry)->GetBotAI()->GetActivity().StartEventAttack(contest.finish);
+            }
+            return true;
+        }
+
+        if (now >= contest.endAt)
+        {
+            EndContest(contest, organizer, nullptr);
+            return false;
+        }
+
+        switch (contest.type)
+        {
+            case CONTEST_RACE:
+            {
+                // mounts are cheating, the first one at the finish line wins
+                WorldObject const* winner = nullptr;
+                float best = CONTEST_FINISH_RANGE;
+                for (auto itr = contest.players.begin(); itr != contest.players.end();)
+                {
+                    Player* player = ObjectAccessor::FindConnectedPlayer(*itr);
+                    if (player->IsMounted() || player->IsInFlight())
+                    {
+                        if (organizer)
+                            organizer->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_DISQUALIFIED, {},
+                                CHAT_MSG_WHISPER, player);
+                        itr = contest.players.erase(itr);
+                        continue;
+                    }
+                    if (player->GetMapId() == contest.mapId && player->GetExactDist2d(contest.finish) < best)
+                    {
+                        best = player->GetExactDist2d(contest.finish);
+                        winner = player;
+                    }
+                    ++itr;
+                }
+                for (uint32 entry : contest.bots)
+                    if (Creature const* bot = GetBot(entry); bot->GetExactDist2d(contest.finish) < best)
+                    {
+                        best = bot->GetExactDist2d(contest.finish);
+                        winner = bot;
+                    }
+                if (!winner)
+                    return true;
+                EndContest(contest, organizer, winner);
+                return false;
+            }
+            case CONTEST_DRINKING:
+            {
+                if (now < contest.nextRound)
+                    return true;
+                contest.nextRound = now + CONTEST_ROUND_TIME;
+                ++contest.round;
+
+                if (organizer)
+                    organizer->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_DRINK_ROUND, {},
+                        CHAT_MSG_MONSTER_SAY);
+
+                // everyone drinks, some give up
+                std::vector<WorldObject*> left;
+                for (uint32 entry : contest.bots)
+                    if (std::ranges::find(contest.botsOut, entry) == contest.botsOut.end())
+                    {
+                        Creature* bot = GetBot(entry);
+                        bot->HandleEmoteCommand(EMOTE_ONESHOT_EAT_NO_SHEATHE);
+                        left.push_back(bot);
+                    }
+                for (ObjectGuid guid : contest.players)
+                    if (std::ranges::find(contest.playersOut, guid) == contest.playersOut.end())
+                    {
+                        Player* player = ObjectAccessor::FindConnectedPlayer(guid);
+                        player->SetDrunkValue(std::min<uint32>(player->GetDrunkValue() + 15, 100));
+                        left.push_back(player);
+                    }
+
+                if (left.size() <= 1 || contest.round >= CONTEST_MAX_ROUNDS)
+                {
+                    EndContest(contest, organizer, left.empty() ? nullptr :
+                        Acore::Containers::SelectRandomContainerElement(left));
+                    return false;
+                }
+
+                Acore::Containers::RandomShuffle(left);
+                for (std::size_t i = 1; i < left.size(); ++i)
+                {
+                    if (!roll_chance_i(CONTEST_DROP_OUT_CHANCE))
+                        continue;
+                    if (Creature* bot = left[i]->ToCreature())
+                    {
+                        contest.botsOut.push_back(bot->GetEntry());
+                        bot->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_DRINK_OUT, {}, CHAT_MSG_MONSTER_SAY);
+                        bot->SetStandState(UNIT_STAND_STATE_SIT);
+                    }
+                    else if (Player* player = left[i]->ToPlayer())
+                    {
+                        contest.playersOut.push_back(player->GetGUID());
+                        ChatHandler(player->GetSession()).SendSysMessage(
+                            BotChatter::GetServerText(BOT_TEXT_CONTEST_PLAYER_OUT));
+                    }
+                }
+                return true;
+            }
+            default:
+            {
+                if (now < contest.nextRound)
+                    return true;
+                contest.nextRound = now + CONTEST_ARM_ROUND_TIME;
+                ++contest.round;
+
+                std::vector<WorldObject*> rivals;
+                for (uint32 entry : contest.bots)
+                    rivals.push_back(GetBot(entry));
+                for (ObjectGuid guid : contest.players)
+                    rivals.push_back(ObjectAccessor::FindConnectedPlayer(guid));
+                if (rivals.size() < 2)
+                {
+                    EndContest(contest, organizer, rivals.empty() ? nullptr : rivals.front());
+                    return false;
+                }
+
+                if (contest.round <= CONTEST_ARM_ROUNDS)
+                {
+                    for (WorldObject* rival : rivals)
+                        if (Creature* bot = rival->ToCreature())
+                        {
+                            bot->HandleEmoteCommand(contest.round % 2 ? EMOTE_ONESHOT_ATTACK1H : EMOTE_ONESHOT_ROAR);
+                            if (roll_chance_i(40))
+                                bot->GetBotAI()->GetChatter().Announce(BOT_TEXT_CONTEST_ARM_ROUND, {},
+                                    CHAT_MSG_MONSTER_SAY);
+                        }
+                    return true;
+                }
+
+                EndContest(contest, organizer, Acore::Containers::SelectRandomContainerElement(rivals));
+                return false;
+            }
+        }
+    }
+
     // dungeons and raids cleared, world bosses defeated
     void RecordContractDeed(Player const* player, Contract const& contract)
     {
@@ -2098,6 +2573,11 @@ void BotWorldEvents::Update(uint32 diff)
         return entry.second.second + FINISHED_EVENT_KEEP_TIME <= now;
     });
     UpdateTrade();
+    std::erase_if(Contests, [](Contest& contest) { return !UpdateContest(contest); });
+    {
+        std::lock_guard<std::mutex> lock(CheersLock);
+        std::erase_if(Cheers, [now](Cheer const& cheer) { return cheer.time + CHEER_KEEP_TIME <= now; });
+    }
 
     std::unordered_set<ObjectGuid> online;
     for (auto const& [_, session] : sWorldSessionMgr->GetAllSessions())
@@ -2116,6 +2596,7 @@ void BotWorldEvents::Update(uint32 diff)
             timers.nextEvent = NextTime(BotCfg::GetBotWorldEventsInterval());
             timers.nextRaidOffer = NextTime(BotCfg::GetBotRaidOffersInterval());
             timers.nextInvasion = NextTime(BotCfg::GetBotInvasionsInterval());
+            timers.nextContest = NextTime(BotCfg::GetBotContestsInterval());
         }
 
         // world pvp zones with players get their objectives fought over
@@ -2140,6 +2621,7 @@ void BotWorldEvents::Update(uint32 diff)
         TryRaidOffer(player, timers);
         TryWorldEvent(player, timers);
         TryInvasion(player, timers);
+        TryContest(player, timers);
     }
 
     std::erase_if(Timers, [&online](auto const& entry) { return !online.contains(entry.first); });
@@ -2315,4 +2797,70 @@ BotEventOutcome BotWorldEvents::GetEventOutcome(uint32 eventId)
 std::string BotWorldEvents::FormatMoney(uint32 copper)
 {
     return MoneyString(copper);
+}
+
+void BotWorldEvents::OnPlayerEmote(Player const* player, uint32 textEmote)
+{
+    if (textEmote != TEXT_EMOTE_CHEER)
+        return;
+
+    std::lock_guard<std::mutex> lock(CheersLock);
+    Cheers.push_back({ player->GetGUID(), player->GetMapId(), player->GetPositionX(), player->GetPositionY(), Now() });
+}
+
+std::string BotWorldEvents::FormatItemLink(uint32 itemId, uint32 count)
+{
+    return ItemLink(itemId, count);
+}
+
+std::vector<uint32> BotWorldEvents::GetInvaderEntries(uint8 theme, uint8 level)
+{
+    std::vector<uint32> entries;
+    if (theme >= GetInvaderThemes().size())
+        return entries;
+    for (CreatureTemplate const* proto : GetInvaderThemes()[theme].creatures)
+        if (proto->minlevel <= uint32(level) + 1 && proto->maxlevel + 2 >= uint32(level))
+            entries.push_back(proto->Entry);
+    return entries;
+}
+
+uint32 BotWorldEvents::StartVillainBattle(Player* player, uint32 villainId, uint32 villainEntry, Position const& lair,
+    std::string const& villainName, std::string const& place, std::vector<uint32> const& followers,
+    std::string const& taunt)
+{
+    Map* map = player->GetMap();
+    TempSummon* villain = map->SummonCreature(villainEntry, lair, nullptr, VILLAIN_LIFETIME);
+    if (!villain)
+        return 0;
+    villain->SetHomePosition(lair);
+
+    WorldEvent event;
+    event.id = NextEventId++;
+    event.type = EVENT_INVASION;
+    event.villainId = villainId;
+    event.mapId = map->GetId();
+    event.target.Relocate(lair);
+    event.rare = villain->GetGUID();
+    event.invaders.push_back(villain->GetGUID());
+    event.enemyName = villainName;
+    event.townName = place;
+    event.invaderEntries = followers;
+    event.wavesLeft = followers.empty() ? 0 : 2;
+    event.attacking = true;
+    event.attackAt = Now() + 20;
+    event.nextWaveAt = event.attackAt;
+    event.endAt = Now() + VILLAIN_BATTLE_TIME;
+
+    uint32 maxBots = std::max<uint32>(BotCfg::GetBotWorldEventsMaxBots(), EVENT_MIN_BOTS) + 2;
+    RecruitEventBots(event, player, INVASION_RECRUIT_RANGE, 15, maxBots, 0, lair);
+    for (uint32 entry : event.bots)
+        if (Creature* bot = GetBot(entry))
+            bot->GetBotAI()->GetActivity().StartEventAttack(lair);
+
+    if (!taunt.empty())
+        villain->Yell(taunt, LANG_UNIVERSAL);
+
+    uint32 id = event.id;
+    Events.push_back(std::move(event));
+    return id;
 }

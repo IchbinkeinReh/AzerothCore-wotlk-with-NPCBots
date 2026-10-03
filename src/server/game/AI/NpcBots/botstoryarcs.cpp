@@ -9,6 +9,7 @@
 #include "botopenai.h"
 #include "botstoryarcs.h"
 #include "bottext.h"
+#include "botvillains.h"
 #include "botworldevents.h"
 #include "Chat.h"
 #include "Containers.h"
@@ -210,7 +211,12 @@ namespace
             << "The trail leads to " << arc.enemyName << " at " << arc.campPlace << ", where " << player->GetName()
             << " has to fight waves of " << arc.enemyName << ".\n"
             << "Make up why: something lost, stolen, someone missing, a threat, a debt, fitting these creatures and "
-            << "places. Write:\n"
+            << "places.\n";
+        BotVillainRef villain;
+        if (BotVillains::GetVillainFor(BotVillains::ANY_THEME, player->GetLevel(), player->GetMapId(), villain))
+            ss << "Behind it all is the villain " << villain.name << ' ' << villain.title << ", leader of "
+                << villain.cult << ": " << villain.backstory << " Mention the villain.\n";
+        ss << "Write:\n"
             << "- title: a short quest title, at most 6 words\n"
             << "- intro: what " << arc.giverName << " says to " << player->GetName() << ", 1-2 sentences, naming "
             << arc.helperName << " and " << arc.helperPlace << "\n"
@@ -329,6 +335,11 @@ namespace
         ChatHandler(player->GetSession()).SendSysMessage(text);
 
         BotNews::RecordDeed(player, BOT_DEED_STORY_ARC, arc.title, arc.campPlace, arc.zoneId);
+
+        // the villain behind it loses followers
+        BotVillainRef villain;
+        if (BotVillains::GetVillainFor(BotVillains::ANY_THEME, player->GetLevel(), arc.mapId, villain))
+            BotVillains::OnFollowersDefeated(villain.id);
         for (uint32 key : { arc.giverKey, arc.helperKey })
             if (Creature* bot = FindBotByKey(key); bot && bot->GetBotAI())
                 bot->GetBotAI()->GetChatter().NoteRelation(player, BOT_RELATION_STORY);

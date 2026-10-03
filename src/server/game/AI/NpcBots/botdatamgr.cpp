@@ -10,6 +10,7 @@
 #include "botmgr.h"
 #include "botspell.h"
 #include "botstoryarcs.h"
+#include "botvillains.h"
 #include "bottext.h"
 #include "botwanderful.h"
 #include "botworldevents.h"
@@ -1375,6 +1376,7 @@ void BotDataMgr::Update(uint32 diff)
     BotChatter::ProcessAIReplies();
     BotWorldEvents::Update(diff);
     BotStoryArcs::Update(diff);
+    BotVillains::Update(diff);
     BotMemory::Update(diff);
 
     static const uint32 BOT_WHO_LIST_UPDATE_DELAY = 5000;
