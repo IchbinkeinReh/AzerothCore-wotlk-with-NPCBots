@@ -5,7 +5,9 @@
 #include "botdefine.h"
 #include "botmemory.h"
 #include "botmgr.h"
+#include "botnews.h"
 #include "botopenai.h"
+#include "botstoryarcs.h"
 #include "bottext.h"
 #include "botworldevents.h"
 #include "CellImpl.h"
@@ -294,6 +296,8 @@ namespace
     constexpr float CHATTER_BOT_MEET_RANGE = 10.0f;
     constexpr uint32 BOND_TRAVEL_CHANCE = 30;
     constexpr uint32 BOND_RIVAL_TALK_CHANCE = 10;
+    constexpr uint32 NEWS_TALK_CHANCE = 15;
+    constexpr uint32 NEWS_FAMOUS_GREET_CHANCE = 40;
 
     std::mutex SocialLock;
     std::unordered_map<uint32 /*entry*/, SocialState> SocialStates;
@@ -747,6 +751,7 @@ void BotChatter::Update(uint32 diff)
         uint32 interval = urand(BotCfg::GetBotChatterIdleIntervalMin(), BotCfg::GetBotChatterIdleIntervalMax());
         _idleTimer = interval * IN_MILLISECONDS;
         if (CanChat(true) && roll_chance_i(BotCfg::GetBotChatterIdleChance()) &&
+            !(roll_chance_i(NEWS_TALK_CHANCE) && TalkAboutNews()) &&
             !(roll_chance_i(BOND_RIVAL_TALK_CHANCE) && TalkAboutRival()))
             Chatter(SelectIdleCategory(), nullptr, true);
     }
@@ -915,6 +920,10 @@ bool BotChatter::OnPlayerWhisper(Player* player, std::string const& botName, std
 {
     if (!BotCfg::IsBotChatterEnabled() || !BotDataMgr::AllBotsLoaded())
         return false;
+
+    // the helper of the player's story arc, wherever it is
+    if (BotStoryArcs::OnPlayerWhisper(player, botName, message))
+        return true;
 
     LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
     Creature const* bot = BotDataMgr::FindBotByNameFor(botName, player);
@@ -1221,6 +1230,12 @@ void BotChatter::ProcessAIReplies()
     BotAIResult result;
     while (BotOpenAI::PollResult(result))
     {
+        if (result.kind == BOT_AI_KIND_STORY_ARC)
+        {
+            BotStoryArcs::OnArcGenerated(result);
+            continue;
+        }
+
         Creature const* bot = BotDataMgr::FindBot(result.botEntry);
         if (bot && bot->GetBotAI())
             bot->GetBotAI()->GetChatter().OnAIReply(result);
@@ -1347,7 +1362,8 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
         default:                                                                  break;
     }
 
-    ss << GetRelationshipText(player) << GetBondsText();
+    ss << GetRelationshipText(player) << GetBondsText()
+        << BotNews::GetNewsContext(BotDataMgr::GetTeamIdForFaction(_me->GetFaction()), player->GetGUID());
 
     ss << player->GetName() << ", a level " << uint32(player->GetLevel()) << ' '
         << GetEnglishRaceName(player->GetRace()) << ' ' << GetEnglishClassName(player->GetClass()) << ", talks to you ";
@@ -1566,6 +1582,17 @@ bool BotChatter::TryGreetNearbyPlayer()
         if (!known && !_me->IsWithinDistInMap(player, CHATTER_GREET_RANGE))
             continue;
 
+        // a famous player the bot only heard of
+        if (!known && affinity > -AFFINITY_LIKE && BotNews::IsFamous(player->GetGUID()) &&
+            roll_chance_i(NEWS_FAMOUS_GREET_CHANCE))
+        {
+            _greeted[player->GetGUID()] = now;
+            std::string deed = BotNews::GetLatestDeedText(player->GetGUID());
+            PerformEmote(roll_chance_i(50) ? TEXT_EMOTE_BOW : TEXT_EMOTE_SALUTE, player);
+            SayTextNearby(BOT_TEXT_NEWS_FAMOUS, player, { { "%deed", deed } });
+            return true;
+        }
+
         // roll once per encounter, friends and foes are always noticed
         _greeted[player->GetGUID()] = now;
         if (!known && !roll_chance_i(BotCfg::GetBotChatterGreetChance()))
@@ -1703,6 +1730,20 @@ bool BotChatter::SayTextNearby(uint32 textId, WorldObject const* subject, TextVa
         return false;
     text.vars = std::move(vars);
     return SayNearby(text, subject, CHAT_MSG_MONSTER_SAY);
+}
+
+// what players did lately is talked about in General
+bool BotChatter::TalkAboutNews()
+{
+    std::string news = BotNews::TakeNews(BotDataMgr::GetTeamIdForFaction(_me->GetFaction()), _me->GetZoneId());
+    if (news.empty())
+        return false;
+
+    ChatterText text;
+    if (!SelectTextVariant(BOT_TEXT_NEWS_CHANNEL, text))
+        return false;
+    text.vars = { { "%news", news } };
+    return SayToZoneChannel(text, nullptr, false) || SayNearby(text, nullptr, CHAT_MSG_MONSTER_SAY);
 }
 
 // rivals are talked about in General
@@ -2330,6 +2371,35 @@ bool BotChatter::AnnounceToChannel(uint32 channelId, uint32 textId, TextVars var
         }
     }
     return sent;
+}
+
+bool BotChatter::SayRaw(std::string const& rawText, ChatMsg msgType, Player* target)
+{
+    if (rawText.empty() || !_me->IsInWorld())
+        return false;
+
+    ChatterText text;
+    text.raw = rawText;
+    switch (msgType)
+    {
+        case CHAT_MSG_MONSTER_SAY:
+        case CHAT_MSG_MONSTER_YELL:
+            return SayNearby(text, target, msgType);
+        case CHAT_MSG_WHISPER:
+            return target && target->GetSession() && WhisperTo(text, target);
+        default:
+            return false;
+    }
+}
+
+std::string BotChatter::SanitizeText(std::string const& text)
+{
+    return SanitizeAIText(text);
+}
+
+char const* BotChatter::GetServerLanguageName()
+{
+    return GetLanguageName(GetChatterLocale());
 }
 
 bool BotChatter::Announce(uint32 textId, TextVars vars, ChatMsg msgType, Player* target)

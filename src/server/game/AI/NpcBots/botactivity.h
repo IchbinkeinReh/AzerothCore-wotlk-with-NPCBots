@@ -18,6 +18,8 @@ NpcBot Activities: what a free wandering bot is doing (NpcBot.WanderingBots.Acti
 - event:    a world event (botworldevents.h): gathering at a rally point, then attacking a camp or a rare
             creature, defending a town or taking a world pvp objective together with other bots and players
 - companion: travelling with a friend (another bot, see BotChatter bonds) for a while, helping in fights
+- gather:   fishing at a lake or the sea, mining an ore vein or picking herbs nearby (looks only, the node
+            stays), the finds are sold in the Trade channel (botworldevents.h)
 
 Free wandering bots choose rest and roleplay on their own. Players can ask any bot (hired ones too) through
 OpenAI to rest or to tell a story.
@@ -36,7 +38,15 @@ enum BotActivityMode : uint8
     BOT_ACTIVITY_ROLEPLAY,
     BOT_ACTIVITY_STORY,
     BOT_ACTIVITY_EVENT,
-    BOT_ACTIVITY_COMPANION
+    BOT_ACTIVITY_COMPANION,
+    BOT_ACTIVITY_GATHER
+};
+
+enum BotGatherKind : uint8
+{
+    BOT_GATHER_FISHING = 0,
+    BOT_GATHER_MINING,
+    BOT_GATHER_HERBALISM
 };
 
 class BotActivity
@@ -103,6 +113,11 @@ private:
     void UpdateStory(uint32 diff);
     void UpdateEvent(uint32 diff);
     void UpdateCompanion(uint32 diff);
+    bool StartGather();
+    bool StartNodeGathering();
+    bool StartFishing();
+    void UpdateGather(uint32 diff);
+    void EndGather();
 
     bool StartRoleplay();
     void JoinCircle(ObjectGuid host, Position const& seat, Position const& fire);
@@ -160,6 +175,16 @@ private:
     // companion
     ObjectGuid _companionLeader;
     bool _companionMounted;
+
+    // gathering
+    BotGatherKind _gatherKind;
+    ObjectGuid _gatherNode;
+    Position _gatherSpot;
+    Position _gatherFacing;
+    bool _gatherWorking;
+    uint32 _gatherTimer;
+    ObjectGuid _gatherBobber;
+    uint32 _gatherOldItem;
 };
 
 #endif //BOTACTIVITY_H

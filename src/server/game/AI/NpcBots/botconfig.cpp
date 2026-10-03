@@ -172,6 +172,10 @@ static uint32 _invasionsInterval;
 static uint32 _invasionsWaves;
 static bool _objectivesEnable;
 static uint32 _objectivesInterval;
+static bool _newsEnable;
+static bool _storyArcsEnable;
+static uint32 _storyArcsInterval;
+static uint32 _activitiesGatherChance;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
@@ -548,6 +552,10 @@ private:
         _invasionsWaves                 = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Invasions.Waves", 3);
         _objectivesEnable               = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Objectives.Enable", true);
         _objectivesInterval             = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Objectives.Interval", 900);
+        _newsEnable                     = sConfigMgr->GetBoolDefault("NpcBot.Chatter.News.Enable", true);
+        _storyArcsEnable                = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.StoryArcs.Enable", true);
+        _storyArcsInterval              = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.StoryArcs.Interval", 7200);
+        _activitiesGatherChance         = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.GatherChance", 10);
         _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
         _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
         _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
@@ -1511,6 +1519,22 @@ bool BotCfg::IsBotObjectivesEnabled()
 uint32 BotCfg::GetBotObjectivesInterval()
 {
     return _objectivesInterval;
+}
+bool BotCfg::IsBotNewsEnabled()
+{
+    return _newsEnable;
+}
+bool BotCfg::IsBotStoryArcsEnabled()
+{
+    return _storyArcsEnable;
+}
+uint32 BotCfg::GetBotStoryArcsInterval()
+{
+    return _storyArcsInterval;
+}
+uint32 BotCfg::GetBotActivitiesGatherChance()
+{
+    return _activitiesGatherChance;
 }
 std::string const& BotCfg::GetBotChatterLocale()
 {

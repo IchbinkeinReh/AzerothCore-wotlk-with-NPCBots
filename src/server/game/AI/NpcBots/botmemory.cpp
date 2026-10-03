@@ -3,6 +3,8 @@
 #include "botconfig.h"
 #include "botdefine.h"
 #include "botmemory.h"
+#include "botnews.h"
+#include "botstoryarcs.h"
 #include "Log.h"
 #include "Timer.h"
 #include "World.h"
@@ -137,6 +139,80 @@ namespace
         };
     }
 
+    json::value DeedToJson(BotDeed const& deed)
+    {
+        return json::object{
+            { "player", deed.player }, { "name", deed.playerName }, { "team", deed.team }, { "type", deed.type },
+            { "subject", deed.subject }, { "place", deed.place }, { "zone", deed.zoneId },
+            { "time", int64(deed.time) }, { "told", deed.told }
+        };
+    }
+
+    BotDeed DeedFromJson(json::object const& obj)
+    {
+        BotDeed deed;
+        deed.player = GetNumber<uint32>(obj, "player");
+        deed.playerName = GetString(obj, "name");
+        deed.team = GetNumber<uint8>(obj, "team");
+        deed.type = GetNumber<uint8>(obj, "type");
+        deed.subject = GetString(obj, "subject");
+        deed.place = GetString(obj, "place");
+        deed.zoneId = GetNumber<uint32>(obj, "zone");
+        deed.time = GetNumber<time_t>(obj, "time");
+        deed.told = GetNumber<uint32>(obj, "told");
+        return deed;
+    }
+
+    json::value ArcToJson(BotStoryArcs::ArcRecord const& arc)
+    {
+        return json::object{
+            { "player", arc.player }, { "giverKey", arc.giverKey }, { "giverName", arc.giverName },
+            { "helperKey", arc.helperKey }, { "helperName", arc.helperName }, { "helperPlace", arc.helperPlace },
+            { "title", arc.title }, { "intro", arc.intro }, { "helperLine", arc.helperLine },
+            { "battleCry", arc.battleCry }, { "finale", arc.finale }, { "map", arc.mapId }, { "x", arc.x },
+            { "y", arc.y }, { "z", arc.z }, { "zone", arc.zoneId }, { "enemyEntry", arc.enemyEntry },
+            { "enemyName", arc.enemyName }, { "campPlace", arc.campPlace }, { "step", arc.step },
+            { "expires", int64(arc.expires) }
+        };
+    }
+
+    float GetFloat(json::object const& obj, std::string_view key)
+    {
+        json::value const* value = obj.if_contains(key);
+        if (!value)
+            return 0.0f;
+        if (value->is_double())
+            return float(value->as_double());
+        return GetNumber<float>(obj, key);
+    }
+
+    BotStoryArcs::ArcRecord ArcFromJson(json::object const& obj)
+    {
+        BotStoryArcs::ArcRecord arc;
+        arc.player = GetNumber<uint32>(obj, "player");
+        arc.giverKey = GetNumber<uint32>(obj, "giverKey");
+        arc.giverName = GetString(obj, "giverName");
+        arc.helperKey = GetNumber<uint32>(obj, "helperKey");
+        arc.helperName = GetString(obj, "helperName");
+        arc.helperPlace = GetString(obj, "helperPlace");
+        arc.title = GetString(obj, "title");
+        arc.intro = GetString(obj, "intro");
+        arc.helperLine = GetString(obj, "helperLine");
+        arc.battleCry = GetString(obj, "battleCry");
+        arc.finale = GetString(obj, "finale");
+        arc.mapId = GetNumber<uint32>(obj, "map");
+        arc.x = GetFloat(obj, "x");
+        arc.y = GetFloat(obj, "y");
+        arc.z = GetFloat(obj, "z");
+        arc.zoneId = GetNumber<uint32>(obj, "zone");
+        arc.enemyEntry = GetNumber<uint32>(obj, "enemyEntry");
+        arc.enemyName = GetString(obj, "enemyName");
+        arc.campPlace = GetString(obj, "campPlace");
+        arc.step = GetNumber<uint8>(obj, "step");
+        arc.expires = GetNumber<time_t>(obj, "expires");
+        return arc;
+    }
+
     BotChatter::SocialRecord SocialFromJson(json::object const& obj)
     {
         BotChatter::SocialRecord record;
@@ -252,6 +328,20 @@ void BotMemory::Load()
 
     BotChatter::ImportSocial(social);
 
+    std::vector<BotDeed> deeds;
+    if (json::value const* values = obj.if_contains("deeds"); values && values->is_array())
+        for (json::value const& value : values->as_array())
+            if (value.is_object())
+                deeds.push_back(DeedFromJson(value.as_object()));
+    BotNews::ImportDeeds(deeds);
+
+    std::vector<BotStoryArcs::ArcRecord> arcs;
+    if (json::value const* values = obj.if_contains("arcs"); values && values->is_array())
+        for (json::value const& value : values->as_array())
+            if (value.is_object())
+                arcs.push_back(ArcFromJson(value.as_object()));
+    BotStoryArcs::ImportArcs(arcs);
+
     BOT_LOG_INFO("server.loading", ">> Loaded {} bot personas and memories of {} bots from '{}' in {} ms",
         uint32(Personas.size()), uint32(social.size()), path, GetMSTimeDiffToNow(oldMSTime));
 #else
@@ -282,6 +372,16 @@ void BotMemory::Save()
         if (IsPersistentSocialKey(record.key))
             social.push_back(SocialToJson(record));
     root["social"] = std::move(social);
+
+    json::array deeds;
+    for (BotDeed const& deed : BotNews::ExportDeeds())
+        deeds.push_back(DeedToJson(deed));
+    root["deeds"] = std::move(deeds);
+
+    json::array arcs;
+    for (BotStoryArcs::ArcRecord const& arc : BotStoryArcs::ExportArcs())
+        arcs.push_back(ArcToJson(arc));
+    root["arcs"] = std::move(arcs);
 
     // write a temporary file first, a crash while writing must not destroy the memories
     std::string const path = GetMemoryFilePath();

@@ -10,7 +10,15 @@
 /*
 NpcBot OpenAI: bot answers generated through the OpenAI Responses API (NpcBot.Chatter.OpenAI.*).
 Requests are sent by worker threads, results are polled and delivered from the world thread.
+Every request belongs to a player and is only sent while that player is online: no tokens are spent on bots
+talking to nobody.
 */
+
+enum BotAIRequestKind : uint8
+{
+    BOT_AI_KIND_CHAT = 0,   // a chat answer or a story sentence (BotChatter)
+    BOT_AI_KIND_STORY_ARC   // a story arc made up for a player (BotStoryArcs), raw JSON in BotAIResult::text
+};
 
 struct BotAIMessage
 {
@@ -31,6 +39,12 @@ struct BotAIRequest
     bool allowActivity = false;
     // a sentence of a story told to the player (story_end field)
     bool storyStep = false;
+    BotAIRequestKind kind = BOT_AI_KIND_CHAT;
+    // own structured output (JSON schema object as text), the answer is returned as is
+    std::string schemaName;
+    std::string schema;
+    // 0: NpcBot.Chatter.OpenAI.MaxOutputTokens
+    uint32 maxOutputTokens = 0;
 };
 
 struct BotAIResult
@@ -42,6 +56,7 @@ struct BotAIResult
     std::string emote; // empty or "none" if no emote
     std::string activity; // empty or "keep" if unchanged, "active", "rest", "story"
     bool storyEnd = false;
+    BotAIRequestKind kind = BOT_AI_KIND_CHAT;
 };
 
 class BotOpenAI
@@ -49,7 +64,7 @@ class BotOpenAI
 public:
     // enabled in config and supported by this build
     static bool IsEnabled();
-    // false if disabled or the queue is full
+    // false if disabled, the queue is full or the player of the request is not online
     static bool Enqueue(BotAIRequest&& request);
     static bool PollResult(BotAIResult& result);
     static void Shutdown();

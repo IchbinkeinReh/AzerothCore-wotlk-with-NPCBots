@@ -29,8 +29,19 @@ up, then say goodbye and leave the group.
 Everything runs in the world thread while maps are not updated (BotDataMgr::Update and session handlers).
 */
 
+class Creature;
 class GameObject;
 class Player;
+class WorldObject;
+struct Position;
+
+enum BotEventOutcome : uint8
+{
+    BOT_EVENT_RUNNING = 0,
+    BOT_EVENT_VICTORY,
+    BOT_EVENT_FAILED,
+    BOT_EVENT_UNKNOWN           // never started or forgotten (restart)
+};
 
 class BotWorldEvents
 {
@@ -43,6 +54,18 @@ public:
     static bool OnPlayerWhisper(Player* player, std::string const& botName, std::string_view message);
     // free wandering bots at a world pvp capture point: alliance minus horde
     static float GetCapturePointBotBalance(GameObject const* capturePoint, float radius);
+
+    // what a gathering bot found (BotActivity, map thread), sold in the Trade channel later
+    static void AddGatheredGoods(Creature const* bot, uint8 gatherKind);
+
+    // story arcs (botstoryarcs.h): a camp of hostile creatures near a spot, and the fight there with the player
+    static bool FindStoryCamp(Player* player, WorldObject const* center, Position& pos, uint32& enemyEntry,
+        std::string& enemyName);
+    static uint32 StartStoryBattle(Player* player, Position const& pos, uint32 enemyEntry,
+        std::string const& battleCry);
+    static BotEventOutcome GetEventOutcome(uint32 eventId);
+
+    static std::string FormatMoney(uint32 copper);
 };
 
 #endif //BOTWORLDEVENTS_H

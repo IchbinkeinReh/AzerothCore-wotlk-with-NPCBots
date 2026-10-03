@@ -5567,6 +5567,15 @@ NpcBot.WanderingBots.Activities.RestChance     = 15
 NpcBot.WanderingBots.Activities.RoleplayChance = 10
 
 #
+#    NpcBot.WanderingBots.Activities.GatherChance
+#        Description: Chance (%) per decision that an active wandering bot goes fishing at water nearby, mines
+#                     an ore vein or picks herbs (looks only, the node stays). The finds are offered in the
+#                     Trade channel later (NpcBot.WanderingBots.Trade.Enable).
+#        Default:     10
+
+NpcBot.WanderingBots.Activities.GatherChance = 10
+
+#
 #    NpcBot.WanderingBots.GroupFinder.Enable
 #    NpcBot.WanderingBots.GroupFinder.Interval
 #    NpcBot.WanderingBots.GroupFinder.Chance
@@ -5706,6 +5715,33 @@ NpcBot.Chatter.Memory.SaveInterval = 300
 #                     0 - (Disabled)
 
 NpcBot.Chatter.Bonds.Enable = 1
+
+#
+#    NpcBot.Chatter.News.Enable
+#        Description: Bots spread news of what players did: defending towns, raiding camps, hunting rares,
+#                     taking world pvp objectives, defeating world bosses, clearing dungeons and story arcs.
+#                     They talk about it in the General channel, know it in OpenAI conversations and greet
+#                     famous players they never met. Kept in the bot memory file.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.Chatter.News.Enable = 1
+
+#
+#    NpcBot.Chatter.OpenAI.StoryArcs.Enable
+#    NpcBot.Chatter.OpenAI.StoryArcs.Interval
+#        Description: Small quest lines OpenAI makes up for a player (level 10+): a bot nearby asks for help,
+#                     the player has to find (or whisper) another bot elsewhere in the zone, whose clue leads
+#                     to a camp of hostile creatures where waves of them attack. After the victory the first
+#                     bot thanks the player and pays a reward. OpenAI is asked once per story and only while
+#                     the player is online. Stories last up to three days and survive restarts.
+#                     Interval: seconds between new stories for a player (randomized). Needs
+#                     NpcBot.Chatter.OpenAI.Enable.
+#        Default:     1    - (NpcBot.Chatter.OpenAI.StoryArcs.Enable)
+#                     7200 - (NpcBot.Chatter.OpenAI.StoryArcs.Interval)
+
+NpcBot.Chatter.OpenAI.StoryArcs.Enable   = 1
+NpcBot.Chatter.OpenAI.StoryArcs.Interval = 7200
 
 #
 #    NpcBot.Guilds.Enable

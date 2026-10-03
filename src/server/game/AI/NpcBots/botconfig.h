@@ -138,6 +138,10 @@ public:
     static uint32 GetBotInvasionsWaves();
     static bool IsBotObjectivesEnabled();
     static uint32 GetBotObjectivesInterval();
+    static bool IsBotNewsEnabled();
+    static bool IsBotStoryArcsEnabled();
+    static uint32 GetBotStoryArcsInterval();
+    static uint32 GetBotActivitiesGatherChance();
     static bool IsBotGuildsEnabled();
     static std::string const& GetBotChatterLocale();
     static bool IsBotOpenAIEnabled();

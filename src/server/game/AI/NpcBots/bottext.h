@@ -526,7 +526,24 @@ enum BotTexts : uint32
     BOT_TEXT_INVADERS_SCOURGE               = 71081, //"The Scourge"
     BOT_TEXT_INVADERS_LEGION                = 71082, //"The Burning Legion"
     BOT_TEXT_INVADERS_RAIDERS               = 71083, //"Raiders"
-    //71084-71100 reserved for bot chatter texts
+    // news about players, see botnews.h: deed sentences in BotDeedType order
+    BOT_TEXT_DEED_TOWN_DEFENDED             = 71084, //"%player defended %place against %subject."
+    BOT_TEXT_DEED_CAMP_RAIDED               = 71085,
+    BOT_TEXT_DEED_RARE_SLAIN                = 71086,
+    BOT_TEXT_DEED_OBJECTIVE_TAKEN           = 71087,
+    BOT_TEXT_DEED_WORLD_BOSS                = 71088,
+    BOT_TEXT_DEED_DUNGEON                   = 71089,
+    BOT_TEXT_DEED_STORY_ARC                 = 71090,
+    BOT_TEXT_NEWS_CHANNEL                   = 71091, //General: "Did you hear? %news"
+    BOT_TEXT_NEWS_FAMOUS                    = 71092, //say: "Aren't you %target? %deed"
+    // gathering, see botactivity.h
+    BOT_TEXT_GATHER_CATCH                   = 71093, //say: "Got one!"
+    // story arcs, see botstoryarcs.h
+    BOT_TEXT_ARC_HINT_HELPER                = 71094, //system: "[%title] Find %helper in %place."
+    BOT_TEXT_ARC_HINT_CAMP                  = 71095, //system: "[%title] Go to %place and face the %enemy."
+    BOT_TEXT_ARC_COMPLETE                   = 71096, //system: "[%title] completed! Reward: %price"
+    BOT_TEXT_ARC_FAILED                     = 71097, //system: "[%title] Try again at %place."
+    //71098-71100 reserved for bot chatter texts
     //71101-71200 campfire stories: lines 71101+2k, listener reactions 71102+2k, see botactivity.h
 };
 

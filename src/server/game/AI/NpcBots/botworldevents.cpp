@@ -5,6 +5,7 @@
 #include "botdatamgr.h"
 #include "botdefine.h"
 #include "botmgr.h"
+#include "botnews.h"
 #include "bottext.h"
 #include "botworldevents.h"
 #include "CellImpl.h"
@@ -31,6 +32,7 @@
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
 
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -86,6 +88,11 @@ namespace
     constexpr float OBJECTIVE_RECRUIT_RANGE = 1500.0f;
     constexpr time_t TRADE_OFFER_TIME = 15 * MINUTE;
     constexpr uint32 CHATTER_CHANNEL_TRADE = 2; // ChatChannels.dbc: Trade - City
+    constexpr uint32 TRADE_MIN_GOODS = 5;
+    constexpr uint32 MAX_GATHERED_GOODS = 40;
+    constexpr time_t FINISHED_EVENT_KEEP_TIME = 30 * MINUTE;
+    constexpr float STORY_BATTLE_RECRUIT_RANGE = 300.0f;
+    constexpr float STORY_CAMP_RANGE = 200.0f;
 
     enum OfferType : uint8
     {
@@ -145,6 +152,9 @@ namespace
         uint32 wavesLeft = 0;
         time_t nextWaveAt = 0;
 
+        // a story arc's battle (botstoryarcs.h): no announcements, no deeds
+        bool story = false;
+
         // objective
         uint32 zoneId = 0;
         ObjectGuid::LowType capturePoint = 0;
@@ -184,6 +194,12 @@ namespace
     std::vector<WorldEvent> Events;
     std::unordered_map<ObjectGuid, PlayerTimers> Timers;
     std::unordered_map<uint32 /*zoneId*/, time_t> NextObjective;
+    // outcome of finished events: victory, end time
+    std::unordered_map<uint32, std::pair<bool, time_t>> FinishedEvents;
+
+    // what gathering bots found, sold in the Trade channel; written from map threads
+    std::mutex GoodsLock;
+    std::unordered_map<uint32 /*bot entry*/, std::unordered_map<uint32 /*item*/, uint32 /*count*/>> GatheredGoods;
     uint32 UpdateTimer = 0;
     uint32 NextEventId = 1;
 
@@ -826,18 +842,20 @@ namespace
     // hostile creatures around a position the leader could fight
     struct EventTargetCheck
     {
-        EventTargetCheck(Player const* player, float range) : _player(player), _range(range) { }
+        EventTargetCheck(Player const* player, WorldObject const* center, float range) :
+            _player(player), _center(center), _range(range) { }
 
         bool operator()(Creature* creature) const
         {
             return creature->IsAlive() && !creature->IsNPCBot() && !creature->IsCritter() && !creature->IsCivilian() &&
                 !creature->IsSummon() && creature->GetSpawnId() && !creature->IsInCombat() &&
                 !creature->isWorldBoss() && !creature->IsDungeonBoss() && creature->IsHostileTo(_player) &&
-                _player->IsWithinDistInMap(creature, _range);
+                _center->IsWithinDistInMap(creature, _range);
         }
 
     private:
         Player const* _player;
+        WorldObject const* _center;
         float _range;
     };
 
@@ -855,13 +873,13 @@ namespace
         return false;
     }
 
-    // a rare creature around the player, or the center of a camp of hostile creatures
-    bool FindEventTarget(Player* player, WorldEvent& event)
+    // a rare creature around a spot (the player), or the center of a camp of hostile creatures
+    bool FindEventTarget(Player* player, WorldObject const* center, float range, bool allowRare, WorldEvent& event)
     {
         std::list<Creature*> creatures;
-        EventTargetCheck check(player, EVENT_SEARCH_RANGE);
-        Acore::CreatureListSearcher<EventTargetCheck> searcher(player, creatures, check);
-        Cell::VisitObjects(player, searcher, EVENT_SEARCH_RANGE);
+        EventTargetCheck check(player, center, range);
+        Acore::CreatureListSearcher<EventTargetCheck> searcher(center, creatures, check);
+        Cell::VisitObjects(center, searcher, range);
 
         std::vector<Creature*> rares, normals;
         for (Creature* creature : creatures)
@@ -880,7 +898,7 @@ namespace
                 normals.push_back(creature);
         }
 
-        if (!rares.empty())
+        if (allowRare && !rares.empty())
         {
             Creature* rare = Acore::Containers::SelectRandomContainerElement(rares);
             event.type = EVENT_HUNT;
@@ -890,7 +908,7 @@ namespace
             return true;
         }
 
-        Creature* center = nullptr;
+        Creature* campCenter = nullptr;
         uint32 bestCount = 0;
         for (Creature* creature : normals)
         {
@@ -901,16 +919,17 @@ namespace
             if (count > bestCount)
             {
                 bestCount = count;
-                center = creature;
+                campCenter = creature;
             }
         }
 
-        if (!center || bestCount < CAMP_MIN_CREATURES)
+        if (!campCenter || bestCount < CAMP_MIN_CREATURES)
             return false;
 
         event.type = EVENT_CAMP;
-        event.target.Relocate(center);
-        event.enemyName = CreatureName(center->GetEntry());
+        event.target.Relocate(campCenter);
+        event.enemyName = CreatureName(campCenter->GetEntry());
+        event.invaderEntries = { campCenter->GetEntry() };
         return true;
     }
 
@@ -955,7 +974,7 @@ namespace
             return;
 
         WorldEvent event;
-        if (!FindEventTarget(player, event))
+        if (!FindEventTarget(player, player, EVENT_SEARCH_RANGE, true, event))
             return;
 
         // rally point between the player and the target, not too close to the enemies
@@ -1360,8 +1379,49 @@ namespace
         return enemies;
     }
 
+    // the players who fought along get the deed told around
+    void RecordEventDeeds(WorldEvent const& event)
+    {
+        Map* map = sMapMgr->FindBaseMap(event.mapId);
+        if (!map || event.story)
+            return;
+
+        BotDeedType type;
+        std::string subject = event.enemyName;
+        switch (event.type)
+        {
+            case EVENT_INVASION:  type = BOT_DEED_TOWN_DEFENDED;   break;
+            case EVENT_HUNT:      type = BOT_DEED_RARE_SLAIN;      break;
+            case EVENT_OBJECTIVE: type = BOT_DEED_OBJECTIVE_TAKEN; break;
+            default:              type = BOT_DEED_CAMP_RAIDED;     break;
+        }
+
+        uint32 zoneId = map->GetZoneId(PHASEMASK_NORMAL, event.target.GetPositionX(), event.target.GetPositionY(),
+            event.target.GetPositionZ());
+        uint32 areaId = map->GetAreaId(PHASEMASK_NORMAL, event.target.GetPositionX(), event.target.GetPositionY(),
+            event.target.GetPositionZ());
+        std::string place = event.type == EVENT_INVASION ? event.townName : ZoneName(areaId);
+        if (place.empty())
+            place = ZoneName(zoneId);
+
+        Map::PlayerList const& players = map->GetPlayers();
+        for (Map::PlayerList::const_iterator itr = players.begin(); itr != players.end(); ++itr)
+        {
+            Player* player = itr->GetSource();
+            if (!player || !player->IsAlive() || player->GetExactDist2d(event.target) > EVENT_THANKS_RANGE)
+                continue;
+            if (event.type == EVENT_OBJECTIVE && player->GetTeamId() != event.team)
+                continue;
+            BotNews::RecordDeed(player, type, subject, place, zoneId);
+        }
+    }
+
     void EndEvent(WorldEvent const& event, bool victory)
     {
+        FinishedEvents[event.id] = { victory, Now() };
+        if (victory)
+            RecordEventDeeds(event);
+
         Creature* leader = nullptr;
         std::vector<Creature*> survivors;
         for (uint32 entry : event.bots)
@@ -1405,7 +1465,7 @@ namespace
         {
             uint32 textId;
             ChatMsg msgType = CHAT_MSG_MONSTER_SAY;
-            switch (event.type)
+            switch (event.story ? EVENT_CAMP : event.type)
             {
                 case EVENT_INVASION:
                     textId = victory ? BOT_TEXT_INVASION_VICTORY : BOT_TEXT_INVASION_FAILED;
@@ -1633,6 +1693,52 @@ namespace
         WantedGoods{ 33568, 68, 80 },
     };
 
+    constexpr std::array OreGoods =
+    {
+        WantedGoods{ 2770, 1, 15 },  WantedGoods{ 2771, 15, 30 },  WantedGoods{ 2772, 25, 45 },
+        WantedGoods{ 3858, 40, 55 }, WantedGoods{ 10620, 50, 60 }, WantedGoods{ 23424, 58, 70 },
+        WantedGoods{ 23425, 65, 70 }, WantedGoods{ 36909, 68, 80 }, WantedGoods{ 36912, 72, 80 },
+    };
+
+    constexpr std::array HerbGoods =
+    {
+        WantedGoods{ 2447, 1, 15 },  WantedGoods{ 765, 1, 15 },    WantedGoods{ 785, 10, 25 },
+        WantedGoods{ 2450, 15, 30 }, WantedGoods{ 3820, 15, 30 },  WantedGoods{ 3355, 25, 40 },
+        WantedGoods{ 3818, 30, 45 }, WantedGoods{ 8831, 40, 55 },  WantedGoods{ 8838, 40, 55 },
+        WantedGoods{ 13464, 50, 60 }, WantedGoods{ 22785, 58, 70 }, WantedGoods{ 22786, 60, 70 },
+        WantedGoods{ 36901, 68, 80 }, WantedGoods{ 36907, 70, 80 },
+    };
+
+    constexpr std::array FishGoods =
+    {
+        WantedGoods{ 6291, 1, 15 },  WantedGoods{ 6289, 10, 25 },  WantedGoods{ 6308, 20, 35 },
+        WantedGoods{ 8365, 30, 45 }, WantedGoods{ 13754, 40, 55 }, WantedGoods{ 13759, 45, 60 },
+        WantedGoods{ 27422, 58, 70 }, WantedGoods{ 41809, 68, 80 },
+    };
+
+    // a stack of something a bot of the faction gathered, taken out of the bot's stock
+    bool TakeGatheredGoods(TeamId team, Creature*& seller, uint32& itemId, uint32& count)
+    {
+        std::lock_guard<std::mutex> lock(GoodsLock);
+        for (auto& [entry, goods] : GatheredGoods)
+        {
+            Creature const* bot = BotDataMgr::FindBot(entry);
+            if (!bot || !bot->GetBotAI() || BotDataMgr::GetTeamIdForFaction(bot->GetFaction()) != team)
+                continue;
+            for (auto itr = goods.begin(); itr != goods.end(); ++itr)
+            {
+                if (itr->second < TRADE_MIN_GOODS)
+                    continue;
+                seller = const_cast<Creature*>(bot);
+                itemId = itr->first;
+                count = itr->second;
+                goods.erase(itr);
+                return true;
+            }
+        }
+        return false;
+    }
+
     // uncommon and rare equipment that drops in the world, by required level
     std::vector<uint32> const& GetSaleItems(uint8 level)
     {
@@ -1752,7 +1858,15 @@ namespace
 
             TradeOffer offer{ seller->GetEntry(), team, roll_chance_i(65), 0, 1, 0, now + TRADE_OFFER_TIME };
             uint8 level = customer->GetLevel();
-            if (offer.selling)
+            if (offer.selling && roll_chance_i(50) && TakeGatheredGoods(team, seller, offer.itemId, offer.count))
+            {
+                // fish, ore and herbs the bot gathered itself
+                offer.bot = seller->GetEntry();
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(offer.itemId);
+                offer.count = std::min<uint32>(offer.count, std::max<uint32>(proto->GetMaxStackSize(), 1));
+                offer.price = std::max<uint32>(proto->SellPrice * urand(2, 4), 1);
+            }
+            else if (offer.selling)
             {
                 std::vector<uint32> items;
                 for (uint8 l = level > 4 ? level - 4 : 1; l <= level; ++l)
@@ -1778,7 +1892,9 @@ namespace
                 offer.price = std::max<uint32>(proto->SellPrice * urand(2, 4), 1);
             }
 
-            BotChatter::TextVars vars{ { "%item", ItemLink(offer.itemId) }, { "%price", MoneyString(offer.price) },
+            // selling: the whole stack for a price, buying: a price for each
+            BotChatter::TextVars vars{ { "%item", ItemLink(offer.itemId, offer.selling ? offer.count : 1) },
+                { "%price", MoneyString(offer.selling ? offer.price * offer.count : offer.price) },
                 { "%count", std::to_string(offer.count) } };
             if (!seller->GetBotAI()->GetChatter().AnnounceToChannel(CHATTER_CHANNEL_TRADE,
                 offer.selling ? BOT_TEXT_TRADE_WTS : BOT_TEXT_TRADE_WTB, std::move(vars)))
@@ -1803,19 +1919,20 @@ namespace
 
         TradeOffer offer = *itr;
         BotChatter& chatter = bot->GetBotAI()->GetChatter();
-        BotChatter::TextVars vars{ { "%item", ItemLink(offer.itemId) }, { "%count", std::to_string(offer.count) },
-            { "%price", MoneyString(offer.price * offer.count) } };
+        uint32 total = offer.price * offer.count;
+        BotChatter::TextVars vars{ { "%item", ItemLink(offer.itemId, offer.selling ? offer.count : 1) },
+            { "%count", std::to_string(offer.count) }, { "%price", MoneyString(total) } };
 
         if (offer.selling)
         {
-            if (!player->HasEnoughMoney(offer.price))
+            if (!player->HasEnoughMoney(total))
             {
                 chatter.Announce(BOT_TEXT_TRADE_NO_MONEY, std::move(vars), CHAT_MSG_WHISPER, player);
                 return true;
             }
 
             ItemPosCountVec dest;
-            if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, offer.itemId, 1) != EQUIP_ERR_OK)
+            if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, offer.itemId, offer.count) != EQUIP_ERR_OK)
             {
                 chatter.Announce(BOT_TEXT_TRADE_BAGS_FULL, std::move(vars), CHAT_MSG_WHISPER, player);
                 return true;
@@ -1825,8 +1942,8 @@ namespace
                 Item::GenerateItemRandomPropertyId(offer.itemId));
             if (!item)
                 return true;
-            player->SendNewItem(item, 1, true, false);
-            player->ModifyMoney(-int32(offer.price));
+            player->SendNewItem(item, offer.count, true, false);
+            player->ModifyMoney(-int32(total));
             chatter.Announce(BOT_TEXT_TRADE_SOLD, std::move(vars), CHAT_MSG_WHISPER, player);
         }
         else
@@ -1838,13 +1955,29 @@ namespace
             }
 
             player->DestroyItemCount(offer.itemId, offer.count, true);
-            player->ModifyMoney(int32(offer.price * offer.count));
+            player->ModifyMoney(int32(total));
             chatter.Announce(BOT_TEXT_TRADE_BOUGHT, std::move(vars), CHAT_MSG_WHISPER, player);
         }
 
         chatter.NoteRelation(player, BOT_RELATION_TALK);
         TradeOffers.erase(std::ranges::find(TradeOffers, offer.bot, &TradeOffer::bot));
         return true;
+    }
+
+    // dungeons and raids cleared, world bosses defeated
+    void RecordContractDeed(Player const* player, Contract const& contract)
+    {
+        if (contract.type == OFFER_DUNGEON || contract.type == OFFER_RAID)
+            BotNews::RecordDeed(player, BOT_DEED_DUNGEON, MapName(contract.contentId), "", 0);
+        else if (contract.type == OFFER_WORLD_BOSS)
+        {
+            WorldBossSpawn const* spawn = FindWorldBossSpawn(contract.contentId);
+            Creature const* boss = spawn ? FindWorldBoss(*spawn) : nullptr;
+            if (!boss || boss->IsAlive())
+                return;
+            uint32 zoneId = sMapMgr->GetZoneId(PHASEMASK_NORMAL, spawn->mapId, spawn->pos);
+            BotNews::RecordDeed(player, BOT_DEED_WORLD_BOSS, CreatureName(spawn->entry), ZoneName(zoneId), zoneId);
+        }
     }
 
     // returns false when the contract is over
@@ -1917,7 +2050,10 @@ namespace
             ai->GetChatter().Announce(done ? BOT_TEXT_EVENT_TASK_DONE : BOT_TEXT_EVENT_TASK_TIMEOUT, {},
                 CHAT_MSG_PARTY, player);
             if (done)
+            {
                 ai->GetChatter().NoteRelation(player, BOT_RELATION_FIGHT_TOGETHER);
+                RecordContractDeed(player, contract);
+            }
         }
         if (bot->IsAlive() && !bot->IsInCombat())
             bot->HandleEmoteCommand(EMOTE_ONESHOT_WAVE);
@@ -1958,6 +2094,9 @@ void BotWorldEvents::Update(uint32 diff)
     }
 
     std::erase_if(Events, [](WorldEvent& event) { return !UpdateEvent(event); });
+    std::erase_if(FinishedEvents, [now](auto const& entry) {
+        return entry.second.second + FINISHED_EVENT_KEEP_TIME <= now;
+    });
     UpdateTrade();
 
     std::unordered_set<ObjectGuid> online;
@@ -2089,4 +2228,91 @@ float BotWorldEvents::GetCapturePointBotBalance(GameObject const* capturePoint, 
             balance -= 1.0f;
     }
     return balance;
+}
+
+void BotWorldEvents::AddGatheredGoods(Creature const* bot, uint8 gatherKind)
+{
+    auto pick = [level = bot->GetLevel()](auto const& goods) -> uint32 {
+        std::vector<uint32> fitting;
+        for (WantedGoods const& wanted : goods)
+            if (level + 3 >= wanted.minLevel && level <= wanted.maxLevel + 5)
+                fitting.push_back(wanted.itemId);
+        return fitting.empty() ? 0 : Acore::Containers::SelectRandomContainerElement(fitting);
+    };
+
+    uint32 itemId, count;
+    switch (gatherKind)
+    {
+        case BOT_GATHER_FISHING: itemId = pick(FishGoods); count = 1;           break;
+        case BOT_GATHER_MINING:  itemId = pick(OreGoods);  count = urand(1, 3); break;
+        default:                 itemId = pick(HerbGoods); count = urand(1, 3); break;
+    }
+    if (!itemId || !sObjectMgr->GetItemTemplate(itemId))
+        return;
+
+    std::lock_guard<std::mutex> lock(GoodsLock);
+    uint32& stock = GatheredGoods[bot->GetEntry()][itemId];
+    stock = std::min(stock + count, MAX_GATHERED_GOODS);
+}
+
+bool BotWorldEvents::FindStoryCamp(Player* player, WorldObject const* center, Position& pos, uint32& enemyEntry,
+    std::string& enemyName)
+{
+    WorldEvent event;
+    if (!FindEventTarget(player, center, STORY_CAMP_RANGE, false, event) || event.invaderEntries.empty())
+        return false;
+
+    pos.Relocate(event.target);
+    enemyEntry = event.invaderEntries.front();
+    enemyName = event.enemyName;
+    return true;
+}
+
+uint32 BotWorldEvents::StartStoryBattle(Player* player, Position const& pos, uint32 enemyEntry,
+    std::string const& battleCry)
+{
+    if (!sObjectMgr->GetCreatureTemplate(enemyEntry))
+        return 0;
+
+    WorldEvent event;
+    event.id = NextEventId++;
+    event.type = EVENT_INVASION;
+    event.story = true;
+    event.mapId = player->GetMapId();
+    event.target.Relocate(pos);
+    event.enemyName = CreatureName(enemyEntry);
+    event.townName = ZoneName(player->GetAreaId());
+    event.invaderEntries = { enemyEntry };
+    event.wavesLeft = 2;
+    event.attackAt = Now() + 3;
+    event.nextWaveAt = event.attackAt;
+    event.endAt = event.attackAt + INVASION_MAX_TIME;
+
+    // bots around lend a hand, the player may have to fight alone
+    uint32 maxBots = std::max<uint32>(BotCfg::GetBotWorldEventsMaxBots(), EVENT_MIN_BOTS);
+    RecruitEventBots(event, player, STORY_BATTLE_RECRUIT_RANGE, 10, maxBots, 0, pos);
+    if (!event.bots.empty() && !battleCry.empty())
+        if (Creature* leader = GetBot(event.bots.front()))
+            leader->GetBotAI()->GetChatter().SayRaw(battleCry, CHAT_MSG_MONSTER_YELL, player);
+
+    uint32 id = event.id;
+    Events.push_back(std::move(event));
+    return id;
+}
+
+BotEventOutcome BotWorldEvents::GetEventOutcome(uint32 eventId)
+{
+    for (WorldEvent const& event : Events)
+        if (event.id == eventId)
+            return BOT_EVENT_RUNNING;
+
+    auto itr = FinishedEvents.find(eventId);
+    if (itr == FinishedEvents.end())
+        return BOT_EVENT_UNKNOWN;
+    return itr->second.first ? BOT_EVENT_VICTORY : BOT_EVENT_FAILED;
+}
+
+std::string BotWorldEvents::FormatMoney(uint32 copper)
+{
+    return MoneyString(copper);
 }

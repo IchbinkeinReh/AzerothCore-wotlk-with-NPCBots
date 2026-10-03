@@ -2,6 +2,8 @@
 #include "botdefine.h"
 #include "botopenai.h"
 #include "Log.h"
+#include "ObjectAccessor.h"
+#include "Player.h"
 
 #include <boost/version.hpp>
 
@@ -97,7 +99,7 @@ namespace
 
     bool IsStructured(BotAIRequest const& request)
     {
-        return !request.emotes.empty() || request.allowActivity || request.storyStep;
+        return request.schema.empty() && (!request.emotes.empty() || request.allowActivity || request.storyStep);
     }
 
     std::string BuildRequestBody(Job const& job)
@@ -113,13 +115,25 @@ namespace
         body["model"] = job.model;
         body["instructions"] = job.request.instructions;
         body["input"] = std::move(input);
-        body["max_output_tokens"] = job.maxOutputTokens;
+        body["max_output_tokens"] = job.request.maxOutputTokens ? job.request.maxOutputTokens : job.maxOutputTokens;
         body["store"] = false;
         if (!job.reasoningEffort.empty())
             body["reasoning"] = json::object{ { "effort", job.reasoningEffort } };
 
+        // own structured answer
+        if (!job.request.schema.empty())
+        {
+            boost::system::error_code ec;
+            json::value schema = json::parse(job.request.schema, ec);
+            if (!ec)
+                body["text"] = json::object{ { "format", json::object{
+                    { "type", "json_schema" },
+                    { "name", job.request.schemaName.empty() ? "bot_answer" : job.request.schemaName },
+                    { "strict", true },
+                    { "schema", std::move(schema) } } } };
+        }
         // structured answer: chat line plus optional emote, activity change and story end
-        if (IsStructured(job.request))
+        else if (IsStructured(job.request))
         {
             json::object properties;
             json::array required;
@@ -327,9 +341,12 @@ namespace
             std::string error;
             std::string text;
             BotAIResult result{ job.request.botEntry, job.request.playerGuid, job.request.replyMode, {}, {}, {},
-                false };
+                false, job.request.kind };
             Url url;
-            if (!ParseUrl(job.endpoint, url))
+            // the player logged out while the request waited
+            if (!ObjectAccessor::FindConnectedPlayer(job.request.playerGuid))
+                error.clear();
+            else if (!ParseUrl(job.endpoint, url))
                 error = "NpcBot.Chatter.OpenAI.Endpoint must be an https:// URL";
             else
             {
@@ -363,6 +380,10 @@ bool BotOpenAI::IsEnabled()
 bool BotOpenAI::Enqueue(BotAIRequest&& request)
 {
     if (!IsEnabled())
+        return false;
+
+    // only for players online
+    if (request.playerGuid.IsEmpty() || !ObjectAccessor::FindConnectedPlayer(request.playerGuid))
         return false;
 
     std::lock_guard<std::mutex> lock(QueueLock);

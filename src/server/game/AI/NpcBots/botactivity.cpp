@@ -5,6 +5,7 @@
 #include "botdatamgr.h"
 #include "botdefine.h"
 #include "bottext.h"
+#include "botworldevents.h"
 #include "CellImpl.h"
 #include "Containers.h"
 #include "GameObject.h"
@@ -44,6 +45,37 @@ namespace
     constexpr float COMPANION_MAX_DISTANCE = 150.0f;
     constexpr float COMPANION_FOLLOW_DISTANCE = 3.0f;
     constexpr uint32 COMPANION_REPATH_DELAY = 1500;
+    constexpr float GATHER_NODE_SEARCH_RADIUS = 40.0f;
+    constexpr float FISHING_MIN_DISTANCE = 5.0f;
+    constexpr float FISHING_MAX_DISTANCE = 15.0f;
+    constexpr uint32 GATHER_MAX_TRAVEL_TIME = 40 * IN_MILLISECONDS;
+    constexpr uint32 ITEM_FISHING_POLE = 6256;
+    constexpr uint32 GO_FISHING_BOBBER = 35591;
+
+    // a herb or an ore vein, by the skill its lock needs
+    bool GetNodeGatherKind(GameObject const* go, BotGatherKind& kind)
+    {
+        if (go->GetGoType() != GAMEOBJECT_TYPE_CHEST || !go->isSpawned())
+            return false;
+
+        LockEntry const* lock = sLockStore.LookupEntry(go->GetGOInfo()->GetLockId());
+        if (!lock)
+            return false;
+
+        for (uint8 i = 0; i < MAX_LOCK_CASE; ++i)
+        {
+            if (lock->Type[i] != LOCK_KEY_SKILL)
+                continue;
+            if (lock->Index[i] == LOCKTYPE_MINING)
+                kind = BOT_GATHER_MINING;
+            else if (lock->Index[i] == LOCKTYPE_HERBALISM)
+                kind = BOT_GATHER_HERBALISM;
+            else
+                continue;
+            return true;
+        }
+        return false;
+    }
 
     uint8 CountTextSlots(uint32 textId)
     {
@@ -98,7 +130,7 @@ BotActivity::BotActivity(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot), _mode(B
     _decisionTimer(0), _modeTimer(0), _requested(false), _seated(false), _phase(ROLEPLAY_GATHER), _phaseTimer(0),
     _story(0), _storyLine(0), _storiesLeft(0), _storyLength(0), _storyLinesTold(0), _storyWaiting(false),
     _storyEnding(false), _storyTimer(0), _eventId(0), _eventAttack(false), _eventMoveTimer(0),
-    _companionMounted(false)
+    _companionMounted(false), _gatherKind(BOT_GATHER_FISHING), _gatherWorking(false), _gatherTimer(0), _gatherOldItem(0)
 {
 }
 
@@ -136,6 +168,8 @@ void BotActivity::Update(uint32 diff)
 
         if (_mode == BOT_ACTIVITY_REST)
             UpdateRest(diff);
+        else if (_mode == BOT_ACTIVITY_GATHER)
+            UpdateGather(diff);
         else if (_mode == BOT_ACTIVITY_STORY)
             UpdateStory(diff);
         else if (_host == _me->GetGUID())
@@ -175,6 +209,7 @@ void BotActivity::ChooseActivity()
     if (_ai->GetChatter().IsTired())
         restChance = std::min<uint32>(restChance * 3, 100 - roleplayChance);
 
+    uint32 gatherChance = BotCfg::GetBotActivitiesGatherChance();
     if (roll < roleplayChance)
     {
         if (!StartRoleplay())
@@ -182,6 +217,8 @@ void BotActivity::ChooseActivity()
     }
     else if (roll < roleplayChance + restChance)
         StartRest();
+    else if (roll < roleplayChance + restChance + gatherChance)
+        StartGather();
 }
 
 bool BotActivity::CanStartActivity() const
@@ -229,6 +266,8 @@ void BotActivity::Stop()
         if (GameObject* fire = ObjectAccessor::GetGameObject(*_me, _campfire))
             fire->Delete();
 
+    if (_mode == BOT_ACTIVITY_GATHER)
+        EndGather();
     if (IsSeated() || _seated)
         StandUp();
 
@@ -405,6 +444,185 @@ void BotActivity::UpdateCompanion(uint32 diff)
         leader->GetPositionY() + COMPANION_FOLLOW_DISTANCE * std::sin(angle), leader->GetPositionZ());
     _me->UpdateAllowedPositionZ(pos.m_positionX, pos.m_positionY, pos.m_positionZ);
     _ai->BotMovement(BOT_MOVE_POINT, &pos, nullptr, true);
+}
+
+bool BotActivity::StartGather()
+{
+    if (!IsSafeSpot())
+        return false;
+
+    // a node nearby, otherwise water to fish in
+    return (roll_chance_i(50) && StartNodeGathering()) || StartFishing() || StartNodeGathering();
+}
+
+bool BotActivity::StartNodeGathering()
+{
+    std::list<GameObject*> nodes;
+    Acore::AllWorldObjectsInRange check(_me, GATHER_NODE_SEARCH_RADIUS);
+    Acore::GameObjectListSearcher<Acore::AllWorldObjectsInRange> searcher(_me, nodes, check);
+    Cell::VisitObjects(_me, searcher, GATHER_NODE_SEARCH_RADIUS);
+
+    GameObject* nearest = nullptr;
+    BotGatherKind kind = BOT_GATHER_MINING;
+    for (GameObject* go : nodes)
+    {
+        BotGatherKind nodeKind;
+        if (GetNodeGatherKind(go, nodeKind) && (!nearest || _me->GetExactDist2d(go) < _me->GetExactDist2d(nearest)))
+        {
+            nearest = go;
+            kind = nodeKind;
+        }
+    }
+    if (!nearest)
+        return false;
+
+    _mode = BOT_ACTIVITY_GATHER;
+    _modeTimer = GATHER_MAX_TRAVEL_TIME;
+    _gatherKind = kind;
+    _gatherNode = nearest->GetGUID();
+    _gatherWorking = false;
+    _gatherFacing.Relocate(nearest);
+
+    // right in front of the node
+    float angle = nearest->GetAbsoluteAngle(_me);
+    _gatherSpot.Relocate(nearest->GetPositionX() + 1.5f * std::cos(angle),
+        nearest->GetPositionY() + 1.5f * std::sin(angle), nearest->GetPositionZ());
+    _me->UpdateAllowedPositionZ(_gatherSpot.m_positionX, _gatherSpot.m_positionY, _gatherSpot.m_positionZ);
+    return true;
+}
+
+// water a few yards away from the shore the bot stands on
+bool BotActivity::StartFishing()
+{
+    if (_me->IsInWater())
+        return false;
+
+    Map* map = _me->GetMap();
+    float baseAngle = rand_norm() * 2.0f * float(M_PI);
+    for (uint8 i = 0; i < 12; ++i)
+    {
+        float angle = baseAngle + i * float(M_PI) / 6.0f;
+        for (float dist = FISHING_MIN_DISTANCE; dist <= FISHING_MAX_DISTANCE; dist += 5.0f)
+        {
+            float x = _me->GetPositionX() + dist * std::cos(angle);
+            float y = _me->GetPositionY() + dist * std::sin(angle);
+            float ground = map->GetHeight(_me->GetPhaseMask(), x, y, _me->GetPositionZ() + 5.0f);
+            float water = map->GetWaterLevel(x, y);
+            if (ground <= INVALID_HEIGHT || water <= INVALID_HEIGHT || water < ground + 1.0f ||
+                std::abs(water - _me->GetPositionZ()) > 6.0f)
+                continue;
+
+            _mode = BOT_ACTIVITY_GATHER;
+            _modeTimer = urand(60, 180) * IN_MILLISECONDS;
+            _gatherKind = BOT_GATHER_FISHING;
+            _gatherSpot.Relocate(_me);
+            _gatherFacing.Relocate(x, y, water);
+            _gatherWorking = false;
+            return true;
+        }
+    }
+    return false;
+}
+
+void BotActivity::UpdateGather(uint32 diff)
+{
+    if (_modeTimer <= diff)
+    {
+        Stop();
+        return;
+    }
+    _modeTimer -= diff;
+
+    if (!_gatherWorking)
+    {
+        if (_gatherKind != BOT_GATHER_FISHING)
+        {
+            GameObject const* node = ObjectAccessor::GetGameObject(*_me, _gatherNode);
+            if (!node || !node->isSpawned())
+            {
+                Stop();
+                return;
+            }
+        }
+
+        if (_me->GetExactDist2d(_gatherSpot) > 1.5f)
+        {
+            if (!_me->isMoving())
+            {
+                if (_me->IsMounted())
+                    _me->RemoveAurasByType(SPELL_AURA_MOUNTED);
+                _ai->BotMovement(BOT_MOVE_POINT, &_gatherSpot, nullptr, true);
+            }
+            return;
+        }
+        if (_me->isMoving())
+            return;
+
+        _me->SetFacingTo(_me->GetAbsoluteAngle(&_gatherFacing));
+        _gatherWorking = true;
+        switch (_gatherKind)
+        {
+            case BOT_GATHER_FISHING:
+            {
+                // a fishing pole in hand and the bobber in the water
+                _gatherOldItem = _me->GetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID);
+                _me->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID, ITEM_FISHING_POLE);
+                _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_FISHING);
+                if (GameObject* bobber = _me->SummonGameObject(GO_FISHING_BOBBER, _gatherFacing.GetPositionX(),
+                    _gatherFacing.GetPositionY(), _gatherFacing.GetPositionZ(), _me->GetOrientation(), 0.0f, 0.0f,
+                    0.0f, 0.0f, _modeTimer / IN_MILLISECONDS + 5))
+                    _gatherBobber = bobber->GetGUID();
+                _gatherTimer = urand(15, 40) * IN_MILLISECONDS;
+                break;
+            }
+            case BOT_GATHER_MINING:
+                _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_WORK_MINING);
+                _gatherTimer = urand(6, 10) * IN_MILLISECONDS;
+                _modeTimer = _gatherTimer + 1000;
+                break;
+            default:
+                _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_LOOT);
+                _gatherTimer = urand(4, 8) * IN_MILLISECONDS;
+                _modeTimer = _gatherTimer + 1000;
+                break;
+        }
+        return;
+    }
+
+    if (_gatherTimer > diff)
+    {
+        _gatherTimer -= diff;
+        return;
+    }
+
+    // something found: a fish now and then, the ore or the herbs at the end
+    BotWorldEvents::AddGatheredGoods(_me, _gatherKind);
+    if (_gatherKind == BOT_GATHER_FISHING)
+    {
+        _me->HandleEmoteCommand(EMOTE_ONESHOT_FISHING);
+        _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_FISHING);
+        if (roll_chance_i(25))
+            _ai->GetChatter().Announce(BOT_TEXT_GATHER_CATCH, {}, CHAT_MSG_MONSTER_SAY);
+        _gatherTimer = urand(15, 40) * IN_MILLISECONDS;
+    }
+    else
+        Stop();
+}
+
+void BotActivity::EndGather()
+{
+    if (_gatherWorking)
+        _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_ONESHOT_NONE);
+    if (_gatherKind == BOT_GATHER_FISHING && _gatherWorking)
+        _me->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID, _gatherOldItem);
+    if (!_gatherBobber.IsEmpty())
+        if (GameObject* bobber = ObjectAccessor::GetGameObject(*_me, _gatherBobber))
+            bobber->Delete();
+
+    _gatherNode.Clear();
+    _gatherBobber.Clear();
+    _gatherWorking = false;
+    _gatherTimer = 0;
 }
 
 bool BotActivity::RequestRest(Player const* /*player*/)

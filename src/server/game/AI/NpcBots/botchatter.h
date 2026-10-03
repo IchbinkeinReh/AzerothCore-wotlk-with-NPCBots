@@ -202,6 +202,12 @@ public:
     bool AnnounceToChannel(uint32 channelId, uint32 textId, TextVars vars);
     // the first variant of a text id in the server language
     static std::string GetServerText(uint32 textId);
+    // a raw text (e.g. made up by OpenAI): /say, /yell or a whisper to target
+    bool SayRaw(std::string const& text, ChatMsg msgType, Player* target = nullptr);
+    // a single chat line out of an OpenAI answer
+    static std::string SanitizeText(std::string const& text);
+    // English name of the server language, for OpenAI
+    static char const* GetServerLanguageName();
 
     // builds one chat packet for a specific locale, used by Acore::LocalizedPacketDo
     class TextBuilder
@@ -243,6 +249,7 @@ private:
     void NoteBond(uint32 otherKey, std::string const& otherName, int32 delta);
     std::string GetBondsText() const;
     bool TalkAboutRival();
+    bool TalkAboutNews();
     // a text id in /say a moment later, e.g. answering another bot
     void SayLater(uint32 textId, ObjectGuid subject, uint32 delay);
     bool SayTextNearby(uint32 textId, WorldObject const* subject, TextVars vars = {});
