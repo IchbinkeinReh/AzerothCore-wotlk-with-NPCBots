@@ -80,6 +80,7 @@ namespace
     constexpr time_t INVASION_MAX_TIME = 12 * MINUTE;
     constexpr uint32 INVASION_WAVE_BASE = 3;
     constexpr uint32 INVASION_WAVE_MAX = 7;
+    constexpr uint32 INVADER_MIN_SPAWNS = 3;
     constexpr time_t OBJECTIVE_MAX_TIME = 12 * MINUTE;
     constexpr time_t OBJECTIVE_HOLD_TIME = 60;
     constexpr float OBJECTIVE_RECRUIT_RANGE = 1500.0f;
@@ -1013,15 +1014,34 @@ namespace
             return themes;
         initialized = true;
 
-        std::unordered_set<uint32> spawned;
+        // common creatures only: spawned several times on continents and nowhere in an instance, which rules
+        // out bosses, named quest creatures and dungeon inhabitants
+        std::unordered_map<uint32, uint32> continentSpawns;
+        std::unordered_set<uint32> instanceCreatures;
         for (auto const& [_, data] : sObjectMgr->GetAllCreatureData())
-            if (sMapStore.LookupEntry(data.mapid) && sMapStore.LookupEntry(data.mapid)->IsContinent())
-                spawned.insert(data.id);
+        {
+            MapEntry const* map = sMapStore.LookupEntry(data.mapid);
+            if (!map)
+                continue;
+            if (map->IsContinent())
+                ++continentSpawns[data.id];
+            else
+                instanceCreatures.insert(data.id);
+        }
 
         for (auto const& [entry, proto] : *sObjectMgr->GetCreatureTemplates())
         {
-            if (!spawned.contains(entry) || proto.rank != CREATURE_ELITE_NORMAL || proto.ScriptID ||
-                (!proto.AIName.empty() && proto.AIName != "SmartAI") || proto.VehicleId || proto.Models.empty())
+            auto spawns = continentSpawns.find(entry);
+            if (spawns == continentSpawns.end() || spawns->second < INVADER_MIN_SPAWNS ||
+                instanceCreatures.contains(entry))
+                continue;
+            // no bosses of any kind
+            if (proto.rank != CREATURE_ELITE_NORMAL || (proto.type_flags & CREATURE_TYPE_FLAG_BOSS_MOB) ||
+                (proto.flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS) ||
+                std::ranges::find(WorldBosses, entry, &WorldBoss::entry) != WorldBosses.end())
+                continue;
+            if (proto.ScriptID || (!proto.AIName.empty() && proto.AIName != "SmartAI") || proto.VehicleId ||
+                proto.Models.empty())
                 continue;
             if (proto.unit_flags & (UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_IMMUNE_TO_PC))
                 continue;
