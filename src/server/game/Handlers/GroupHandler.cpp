@@ -41,6 +41,7 @@
 #include "CreatureData.h"
 #include "botdatamgr.h"
 #include "botmgr.h"
+#include "botworldevents.h"
 //end npcbot
 
 class Aura;
@@ -253,6 +254,11 @@ void WorldSession::HandleGroupAcceptOpcode(WorldPacket& recvData)
     recvData.read_skip<uint32>();
     Group* group = GetPlayer()->GetGroupInvite();
 
+    //npcbot: invite sent by a bot
+    if (!group && BotWorldEvents::OnGroupInviteAnswer(GetPlayer(), true))
+        return;
+    //end npcbot
+
     if (!group)
         return;
 
@@ -343,6 +349,12 @@ void WorldSession::HandleGroupAcceptOpcode(WorldPacket& recvData)
 void WorldSession::HandleGroupDeclineOpcode(WorldPacket& /*recvData*/)
 {
     Group* group = GetPlayer()->GetGroupInvite();
+
+    //npcbot: invite sent by a bot
+    if (!group && BotWorldEvents::OnGroupInviteAnswer(GetPlayer(), false))
+        return;
+    //end npcbot
+
     if (!group)
         return;
 

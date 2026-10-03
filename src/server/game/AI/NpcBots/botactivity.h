@@ -15,6 +15,8 @@ NpcBot Activities: what a free wandering bot is doing (NpcBot.WanderingBots.Acti
 - roleplay: 2-5 bots sitting around a campfire telling each other stories, the host bot leads the circle
 - story:    a bot at a campfire telling a player a story made up by OpenAI, sentence by sentence, reacting
             to what the player says (1 on 1 roleplay)
+- event:    a world event (botworldevents.h): gathering at a rally point, then attacking a camp or a rare
+            creature together with other bots and players
 
 Free wandering bots choose rest and roleplay on their own. Players can ask any bot (hired ones too) through
 OpenAI to rest or to tell a story.
@@ -31,7 +33,8 @@ enum BotActivityMode : uint8
     BOT_ACTIVITY_ACTIVE     = 0,
     BOT_ACTIVITY_REST,
     BOT_ACTIVITY_ROLEPLAY,
-    BOT_ACTIVITY_STORY
+    BOT_ACTIVITY_STORY,
+    BOT_ACTIVITY_EVENT
 };
 
 class BotActivity
@@ -47,7 +50,12 @@ public:
     bool IsTellingStory() const { return _mode == BOT_ACTIVITY_STORY; }
     bool IsTellingStoryTo(ObjectGuid player) const { return IsTellingStory() && _storyPlayer == player; }
     // sitting somewhere instead of wandering or following
-    bool IsSeated() const { return _mode != BOT_ACTIVITY_ACTIVE; }
+    bool IsSeated() const
+    {
+        return _mode == BOT_ACTIVITY_REST || _mode == BOT_ACTIVITY_ROLEPLAY || _mode == BOT_ACTIVITY_STORY;
+    }
+    bool IsInEvent() const { return _mode == BOT_ACTIVITY_EVENT; }
+    uint32 GetEventId() const { return IsInEvent() ? _eventId : 0; }
 
     // back to active, stands up
     void Stop();
@@ -55,6 +63,10 @@ public:
     // asked by a player (OpenAI)
     bool RequestRest(Player const* player);
     bool StartStoryWith(Player const* player);
+
+    // world events, world thread: gathering at the rally point, then fighting at the target
+    bool JoinEvent(uint32 eventId, Position const& rally);
+    void StartEventAttack(Position const& target);
 
     // story told to a player, see BotChatter::RequestStoryStep()
     void OnStoryComment(std::string_view comment);
@@ -81,6 +93,7 @@ private:
     bool StartRest();
     void UpdateRest(uint32 diff);
     void UpdateStory(uint32 diff);
+    void UpdateEvent(uint32 diff);
 
     bool StartRoleplay();
     void JoinCircle(ObjectGuid host, Position const& seat, Position const& fire);
@@ -127,6 +140,13 @@ private:
     bool _storyWaiting;
     bool _storyEnding;
     uint32 _storyTimer;
+
+    // world event
+    uint32 _eventId;
+    Position _eventRally;
+    Position _eventTarget;
+    bool _eventAttack;
+    uint32 _eventMoveTimer;
 };
 
 #endif //BOTACTIVITY_H

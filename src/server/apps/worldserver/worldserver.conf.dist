@@ -5567,6 +5567,91 @@ NpcBot.WanderingBots.Activities.RestChance     = 15
 NpcBot.WanderingBots.Activities.RoleplayChance = 10
 
 #
+#    NpcBot.WanderingBots.GroupFinder.Enable
+#    NpcBot.WanderingBots.GroupFinder.Interval
+#    NpcBot.WanderingBots.GroupFinder.Chance
+#        Description: A free wandering bot near a player (level 10+) offers to do an elite quest of the
+#                     player's quest log or a dungeon fitting the player's level together. The offer is a
+#                     regular group invite (or a whisper answered with yes/no). On accept the bot joins,
+#                     for a dungeon more bots fill the group (tank and healer first). The bots leave when
+#                     the quest is done or the dungeon was left.
+#                     Interval: seconds between offers to a player (randomized), Chance: % to offer then.
+#        Default:     1   - (NpcBot.WanderingBots.GroupFinder.Enable)
+#                     900 - (NpcBot.WanderingBots.GroupFinder.Interval)
+#                     50  - (NpcBot.WanderingBots.GroupFinder.Chance)
+
+NpcBot.WanderingBots.GroupFinder.Enable   = 1
+NpcBot.WanderingBots.GroupFinder.Interval = 900
+NpcBot.WanderingBots.GroupFinder.Chance   = 50
+
+#
+#    NpcBot.WanderingBots.QuestHelp.Enable
+#    NpcBot.WanderingBots.QuestHelp.Chance
+#    NpcBot.WanderingBots.QuestHelp.Cooldown
+#        Description: When a player fights a creature needed for a quest, a free wandering bot nearby may
+#                     join the fight ("I need those too!") and invite the player to team up until the
+#                     quest is done. Chance (%) per fight, Cooldown in seconds per player after a bot
+#                     joined.
+#        Default:     1   - (NpcBot.WanderingBots.QuestHelp.Enable)
+#                     25  - (NpcBot.WanderingBots.QuestHelp.Chance)
+#                     300 - (NpcBot.WanderingBots.QuestHelp.Cooldown)
+
+NpcBot.WanderingBots.QuestHelp.Enable   = 1
+NpcBot.WanderingBots.QuestHelp.Chance   = 25
+NpcBot.WanderingBots.QuestHelp.Cooldown = 300
+
+#
+#    NpcBot.WanderingBots.Events.Enable
+#    NpcBot.WanderingBots.Events.Interval
+#    NpcBot.WanderingBots.Events.MaxBots
+#        Description: Dynamic events around players on continents: free wandering bots gather near a
+#                     player, call for help in /yell and the General channel and then raid a camp of
+#                     hostile creatures or hunt a rare creature. Players are welcome to join, the bots
+#                     remember who fought along. Interval: seconds between events around a player
+#                     (randomized), MaxBots: bots taking part (at least 2).
+#        Default:     1    - (NpcBot.WanderingBots.Events.Enable)
+#                     1200 - (NpcBot.WanderingBots.Events.Interval)
+#                     5    - (NpcBot.WanderingBots.Events.MaxBots)
+
+NpcBot.WanderingBots.Events.Enable   = 1
+NpcBot.WanderingBots.Events.Interval = 1200
+NpcBot.WanderingBots.Events.MaxBots  = 5
+
+#
+#    NpcBot.WanderingBots.Raids.Enable
+#    NpcBot.WanderingBots.Raids.Interval
+#    NpcBot.WanderingBots.Raids.Size
+#        Description: A free wandering bot organizes a world boss or raid run for a player (level 58+) and
+#                     invites them. On accept a whole raid of bots joins (tanks and healers included) and
+#                     travels to the player. The bots leave when the world boss is defeated or the raid
+#                     instance was left. Interval: seconds between offers to a player (randomized), Size:
+#                     raid size including the player. Needs NpcBot.Enable.Raid = 1 for raid instances and
+#                     NpcBot.MaxBots allowing that many bots.
+#        Default:     1    - (NpcBot.WanderingBots.Raids.Enable)
+#                     3600 - (NpcBot.WanderingBots.Raids.Interval)
+#                     10   - (NpcBot.WanderingBots.Raids.Size)
+
+NpcBot.WanderingBots.Raids.Enable   = 1
+NpcBot.WanderingBots.Raids.Interval = 3600
+NpcBot.WanderingBots.Raids.Size     = 10
+
+#
+#    NpcBot.Chatter.Memory.Enable
+#    NpcBot.Chatter.Memory.File
+#    NpcBot.Chatter.Memory.SaveInterval
+#        Description: Bots remember across server restarts: generated wandering bots keep their name and
+#                     look (the same bots appear again), moods and relationships to players are kept. Saved
+#                     as JSON to File (relative paths are inside DataDir) every SaveInterval seconds and on
+#                     shutdown. Needs Boost 1.75+.
+#        Default:     1                     - (NpcBot.Chatter.Memory.Enable)
+#                     "npcbots_memory.json" - (NpcBot.Chatter.Memory.File)
+#                     300                   - (NpcBot.Chatter.Memory.SaveInterval)
+
+NpcBot.Chatter.Memory.Enable       = 1
+NpcBot.Chatter.Memory.File         = "npcbots_memory.json"
+NpcBot.Chatter.Memory.SaveInterval = 300
+
+#
 #    NpcBot.Guilds.Enable
 #    NpcBot.Guilds.Chance
 #        Description: Give bots a guild name, like players have. Each bot gets a random but stable

@@ -4,12 +4,14 @@
 #include "botconfig.h"
 #include "botchatter.h"
 #include "botdatamgr.h"
+#include "botmemory.h"
 #include "botgearscore.h"
 #include "botlog.h"
 #include "botmgr.h"
 #include "botspell.h"
 #include "bottext.h"
 #include "botwanderful.h"
+#include "botworldevents.h"
 #include "bpet_ai.h"
 #include "CharacterCache.h"
 #include "Containers.h"
@@ -592,9 +594,41 @@ private:
         std::string name;
     };
 
+    // a stored persona of the class (the same bot as before the restart), see botmemory.h
+    bool TakeStoredBotLook(uint8 bot_class, RandomBotLook& look)
+    {
+        while (std::optional<BotPersona> persona = BotMemory::TakePersona(bot_class))
+        {
+            // bound to the new bot, or dropped for this start if its prototype is gone
+            BotMemory::BindPersona(next_bot_id, persona->id);
+
+            auto pitr = prototypesPerClass.find(bot_class);
+            if (pitr == prototypesPerClass.end() ||
+                std::ranges::find(pitr->second, persona->protoEntry) == pitr->second.end())
+                continue;
+
+            look.protoEntry = persona->protoEntry;
+            look.race = persona->race;
+            look.gender = persona->gender;
+            look.displayId = persona->displayId;
+            look.hasAppearance = persona->hasAppearance;
+            look.appearance = persona->appearance;
+            look.name = persona->name;
+
+            std::string lname = look.name;
+            std::transform(lname.begin(), lname.end(), lname.begin(), ::tolower);
+            usedNames.insert(std::move(lname));
+            return true;
+        }
+        return false;
+    }
+
     // random race, gender, look and name for a class
     bool CreateRandomBotLook(uint8 bot_class, RandomBotLook& look)
     {
+        if (TakeStoredBotLook(bot_class, look))
+            return true;
+
         auto pitr = prototypesPerClass.find(bot_class);
         if (pitr == prototypesPerClass.end() || pitr->second.empty())
             return false;
@@ -635,6 +669,17 @@ private:
         }
 
         look.name = SelectRandomName(look.gender, proto->Name);
+
+        BotPersona persona;
+        persona.botClass = bot_class;
+        persona.protoEntry = look.protoEntry;
+        persona.race = look.race;
+        persona.gender = look.gender;
+        persona.displayId = look.displayId;
+        persona.hasAppearance = look.hasAppearance;
+        persona.appearance = look.appearance;
+        persona.name = look.name;
+        BotMemory::BindPersona(next_bot_id, BotMemory::AddPersona(std::move(persona)));
         return true;
     }
 
@@ -730,6 +775,8 @@ private:
         bot_template.speed_run = BotCfg::GetBotWandererSpeedMod();
         // random bots do not return a spare bot on despawn
         bot_template.KillCredit[0] = spare_entry;
+        if (spare_entry)
+            BotMemory::BindOriginalEntry(next_bot_id, spare_entry);
         if (!spare_entry)
         {
             bot_template.Name = look.name;
@@ -1252,8 +1299,9 @@ std::string const& BotDataMgr::GetBotGuildName(uint32 entry)
     if (!BotCfg::IsBotGuildsEnabled() || _botGuildNames.empty())
         return noGuild;
 
-    // spread consecutive entries (generated wanderers), several bots end up in the same guild
-    uint32 hash = entry * 2654435761u;
+    // spread consecutive entries (generated wanderers), several bots end up in the same guild,
+    // the same bot (persona) stays in its guild after a restart
+    uint32 hash = BotMemory::GetGuildSeed(entry) * 2654435761u;
     if ((hash >> 16) % 100 >= BotCfg::GetBotGuildChance())
         return noGuild;
 
@@ -1324,6 +1372,8 @@ void BotDataMgr::AppendBotsToWhoList(BotWhoListQuery const& query, WorldPacket& 
 void BotDataMgr::Update(uint32 diff)
 {
     BotChatter::ProcessAIReplies();
+    BotWorldEvents::Update(diff);
+    BotMemory::Update(diff);
 
     static const uint32 BOT_WHO_LIST_UPDATE_DELAY = 5000;
     if (_botWhoListUpdateTimer <= diff)

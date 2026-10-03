@@ -138,7 +138,7 @@ public:
     static void OnBotPartyEngage(Player const* owner);
     // /invite <bot name>: hires the bot and adds it to the group, returns false if there is no such bot
     static bool InviteBotByName(Player* player, std::string const& name);
-    static bool HireInvitedBot(Player* player, Creature* bot);
+    static bool HireInvitedBot(Player* player, Creature* bot, bool announce = true);
     static void OnBotAttackStop(Creature const* bot, Unit const* target);
     //mod hooks
     static void ApplyBotEffectMods(Unit const* caster, SpellInfo const* spellInfo, uint8 effIndex, float& value);

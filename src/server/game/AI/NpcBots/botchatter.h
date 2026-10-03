@@ -111,7 +111,8 @@ public:
     void OnDied(Unit const* killer);
     void OnHired(Player const* owner);
 
-    // mood and relationships to players, kept in memory per bot entry (survive despawns, not restarts)
+    // mood and relationships to players, kept per bot entry or persona (survive despawns and restarts, see
+    // botmemory.h)
     BotMood GetMood() const;
     bool IsTired() const { return GetMood() == BOT_MOOD_TIRED; }
     void NoteRelation(Player const* player, BotRelationEvent event);
@@ -136,13 +137,53 @@ public:
     // a player's /emote, called from the player's map thread
     static void OnPlayerTextEmote(Player* player, uint32 textEmote, Unit const* target);
 
+    // moods and relationships of all bots, saved and loaded by BotMemory
+    struct RelationRecord
+    {
+        uint32 player = 0; // player guid counter
+        std::string name;
+        int32 affinity = 0;
+        uint32 talks = 0;
+        uint32 fights = 0;
+        uint32 attacks = 0;
+        uint32 killedMe = 0;
+        uint32 killedThem = 0;
+        uint32 stories = 0;
+        uint32 friendly = 0;
+        uint32 hostile = 0;
+        bool hired = false;
+        time_t lastSeen = 0;
+    };
+    struct SocialRecord
+    {
+        uint32 key = 0;
+        int32 mood = 0;
+        uint32 activeMinutes = 0;
+        std::vector<RelationRecord> relations;
+    };
+    static std::vector<SocialRecord> ExportSocial();
+    static void ImportSocial(std::vector<SocialRecord> const& records);
+
+    // extra placeholders of a text and their values, e.g. { "%quest", "The Missing Diplomat" }
+    using TextVars = std::vector<std::pair<std::string, std::string>>;
+
     // a text id variant (localized for each listener) or a raw text
     struct ChatterText
     {
         uint32 textId = 0;
         uint8 slot = 0;
         std::string raw;
+        TextVars vars;
     };
+
+    // world events (botworldevents.h), world thread: a random variant of a text id in /say, /yell (nearby
+    // players), the zone's General channel, a whisper to target or the bot's group chat. %target is target
+    static bool HasText(uint32 textId);
+    // whole words or phrases of a keyword text (any locale) in a message
+    static bool MatchesKeywordText(std::string_view message, uint32 textId);
+    // the language bots talk in (NpcBot.Chatter.Locale)
+    static LocaleConstant GetServerLocale();
+    bool Announce(uint32 textId, TextVars vars, ChatMsg msgType, Player* target = nullptr);
 
     // builds one chat packet for a specific locale, used by Acore::LocalizedPacketDo
     class TextBuilder
@@ -202,7 +243,7 @@ private:
     void PauseToType(ChatterText const& text, WorldObject const* subject);
     void ReactToEmote(Player* player, uint32 textEmote, bool atMe);
 
-    std::string FormatText(uint32 textId, uint8 slot, LocaleConstant locale, WorldObject const* subject) const;
+    std::string FormatText(ChatterText const& text, LocaleConstant locale, WorldObject const* subject) const;
     std::string GetDefaultText(ChatterText const& text, WorldObject const* subject) const;
 
     bot_ai* _ai;

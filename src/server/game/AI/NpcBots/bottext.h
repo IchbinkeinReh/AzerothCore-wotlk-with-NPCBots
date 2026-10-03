@@ -469,7 +469,32 @@ enum BotTexts : uint32
     BOT_TEXT_CHATTER_MOOD_CHEERFUL          = 71028,
     BOT_TEXT_CHATTER_MOOD_GRUMPY            = 71029,
     BOT_TEXT_CHATTER_MOOD_TIRED             = 71030,
-    //71031-71100 reserved for bot chatter texts
+    // world events, see botworldevents.h
+    BOT_TEXT_EVENT_GROUP_QUEST_OFFER        = 71031, //whisper: "I am on %quest too, want to team up?"
+    BOT_TEXT_EVENT_DUNGEON_CALL             = 71032, //General: "Anyone up for %dungeon?"
+    BOT_TEXT_EVENT_DUNGEON_OFFER            = 71033, //whisper: "We are going to %dungeon, coming along?"
+    BOT_TEXT_EVENT_QUEST_HELP_JOIN          = 71034, //say: "I need those for %quest too!"
+    BOT_TEXT_EVENT_QUEST_HELP_OFFER         = 71035, //whisper: "Team up until we are done with %quest?"
+    BOT_TEXT_EVENT_BOSS_CALL                = 71036, //General: "Gathering against %boss in %place!"
+    BOT_TEXT_EVENT_BOSS_OFFER               = 71037, //whisper: "We are taking on %boss in %place, join us!"
+    BOT_TEXT_EVENT_RAID_CALL                = 71038, //General: "Forming a raid for %raid!"
+    BOT_TEXT_EVENT_RAID_OFFER               = 71039, //whisper: "Want to join our raid to %raid?"
+    BOT_TEXT_EVENT_OFFER_ACCEPTED           = 71040, //party: "Great, let's go!"
+    BOT_TEXT_EVENT_OFFER_DECLINED           = 71041, //whisper: "Too bad, maybe next time."
+    BOT_TEXT_EVENT_TASK_DONE                = 71042, //party: "Done, thanks %target!"
+    BOT_TEXT_EVENT_TASK_TIMEOUT             = 71043, //party: "I have to go now."
+    BOT_TEXT_EVENT_CAMP_CALL                = 71044, //yell: "We are raiding the %enemy camp, who is with us?"
+    BOT_TEXT_EVENT_CAMP_CHANNEL             = 71045, //General: "Attacking the %enemy camp in %zone!"
+    BOT_TEXT_EVENT_HUNT_CALL                = 71046, //yell: "%enemy has been spotted, let's hunt it!"
+    BOT_TEXT_EVENT_HUNT_CHANNEL             = 71047, //General: "Hunting %enemy in %zone!"
+    BOT_TEXT_EVENT_ATTACK                   = 71048, //yell: "Charge!"
+    BOT_TEXT_EVENT_VICTORY                  = 71049, //say: "Victory!"
+    BOT_TEXT_EVENT_FAILED                   = 71050, //say: "Let's call it off."
+    BOT_TEXT_EVENT_JOIN                     = 71051, //say: "Count me in!"
+    BOT_TEXT_EVENT_KEYWORDS_YES             = 71052, //keywords accepting an offer, '|' separated
+    BOT_TEXT_EVENT_KEYWORDS_NO              = 71053, //keywords declining an offer, '|' separated
+    BOT_TEXT_EVENT_OFFER_GONE               = 71054, //whisper: "Sorry, plans changed."
+    //71055-71100 reserved for bot chatter texts
     //71101-71200 campfire stories: lines 71101+2k, listener reactions 71102+2k, see botactivity.h
 };
 

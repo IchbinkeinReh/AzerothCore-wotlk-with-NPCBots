@@ -6,6 +6,7 @@
 #include "botdatamgr.h"
 #include "botdpstracker.h"
 #include "botlog.h"
+#include "botmemory.h"
 #include "botmgr.h"
 #include "botspell.h"
 #include "bottext.h"
@@ -76,6 +77,7 @@ void BotMgr::Initialize()
     BotDataMgr::LoadNpcBotGuildNames();
     BotDataMgr::LoadNpcBotRandomNames();
     BotDataMgr::LoadWanderMap();
+    BotMemory::Load();
     BotDataMgr::GenerateWanderingBots();
     BotDataMgr::CreateGeneratedBotsSortedGear();
     BotDataMgr::LoadNpcBotGroupData();
@@ -957,7 +959,7 @@ bool BotMgr::InviteBotByName(Player* player, std::string const& name)
 }
 
 // hires an invited bot like the hire option of the gossip menu does, but free of charge
-bool BotMgr::HireInvitedBot(Player* player, Creature* bot)
+bool BotMgr::HireInvitedBot(Player* player, Creature* bot, bool announce)
 {
     bot_ai* ai = bot->GetBotAI();
     WorldSession* session = player->GetSession();
@@ -1004,7 +1006,8 @@ bool BotMgr::HireInvitedBot(Player* player, Creature* bot)
         return true;
     }
 
-    bot->Whisper(bot_ai::LocalizedNpcText(player, BOT_TEXT_HIRE_SUCCESS), LANG_UNIVERSAL, player);
+    if (announce)
+        bot->Whisper(bot_ai::LocalizedNpcText(player, BOT_TEXT_HIRE_SUCCESS), LANG_UNIVERSAL, player);
 
     if (!player->GetBotMgr()->AddBotToGroup(bot))
         session->SendPartyResult(PARTY_OP_INVITE, bot->GetName(), ERR_GROUP_FULL);

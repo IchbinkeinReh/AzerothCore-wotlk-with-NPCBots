@@ -115,6 +115,21 @@ public:
     static uint32 GetBotActivitiesIntervalMax();
     static uint32 GetBotActivitiesRestChance();
     static uint32 GetBotActivitiesRoleplayChance();
+    static bool IsBotMemoryEnabled();
+    static std::string const& GetBotMemoryFile();
+    static uint32 GetBotMemorySaveInterval();
+    static bool IsBotGroupFinderEnabled();
+    static uint32 GetBotGroupFinderInterval();
+    static uint32 GetBotGroupFinderChance();
+    static bool IsBotQuestHelpEnabled();
+    static uint32 GetBotQuestHelpChance();
+    static uint32 GetBotQuestHelpCooldown();
+    static bool IsBotWorldEventsEnabled();
+    static uint32 GetBotWorldEventsInterval();
+    static uint32 GetBotWorldEventsMaxBots();
+    static bool IsBotRaidOffersEnabled();
+    static uint32 GetBotRaidOffersInterval();
+    static uint32 GetBotRaidOffersSize();
     static bool IsBotGuildsEnabled();
     static std::string const& GetBotChatterLocale();
     static bool IsBotOpenAIEnabled();
@@ -172,6 +187,7 @@ public:
     static std::string GetNpcBotCostStr(uint8 level, uint8 botclass);
 
     static bool IsMapAllowedForBots(Map const* map);
+    static bool IsMapIdAllowedForBots(uint32 mapId);
 private:
     static uint32 _normalizedCostForLevel(uint32 cost_base, uint8 bot_class, uint8 level);
 };

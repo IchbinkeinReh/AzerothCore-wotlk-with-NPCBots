@@ -36,6 +36,10 @@ namespace
     constexpr float STORY_SEAT_DISTANCE = 2.2f;
     constexpr uint32 STORY_MAX_TIME = 10 * MINUTE * IN_MILLISECONDS;
     constexpr uint32 STORY_ANSWER_TIMEOUT = 45 * IN_MILLISECONDS;
+    constexpr uint32 EVENT_MAX_TIME = 15 * MINUTE * IN_MILLISECONDS;
+    constexpr float EVENT_RALLY_SPREAD = 5.0f;
+    constexpr float EVENT_TARGET_SPREAD = 8.0f;
+    constexpr uint32 EVENT_REPATH_DELAY = 3000;
 
     uint8 CountTextSlots(uint32 textId)
     {
@@ -89,12 +93,22 @@ namespace
 BotActivity::BotActivity(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot), _mode(BOT_ACTIVITY_ACTIVE),
     _decisionTimer(0), _modeTimer(0), _requested(false), _seated(false), _phase(ROLEPLAY_GATHER), _phaseTimer(0),
     _story(0), _storyLine(0), _storiesLeft(0), _storyLength(0), _storyLinesTold(0), _storyWaiting(false),
-    _storyEnding(false), _storyTimer(0)
+    _storyEnding(false), _storyTimer(0), _eventId(0), _eventAttack(false), _eventMoveTimer(0)
 {
 }
 
 void BotActivity::Update(uint32 diff)
 {
+    // world events run without the activities config, a hired bot or a teleport ends them
+    if (_mode == BOT_ACTIVITY_EVENT)
+    {
+        if (!_me->IsInWorld() || !_ai->IsWanderer() || !_ai->IAmFree() || _ai->IsDuringTeleport())
+            Stop();
+        else
+            UpdateEvent(diff);
+        return;
+    }
+
     // activities players asked for work without the autonomous ones
     if (!BotCfg::IsBotActivitiesEnabled() && !_requested)
     {
@@ -208,10 +222,13 @@ void BotActivity::Stop()
         if (GameObject* fire = ObjectAccessor::GetGameObject(*_me, _campfire))
             fire->Delete();
 
-    if (_mode != BOT_ACTIVITY_ACTIVE)
+    if (IsSeated())
         StandUp();
 
     _mode = BOT_ACTIVITY_ACTIVE;
+    _eventId = 0;
+    _eventAttack = false;
+    _eventMoveTimer = 0;
     _modeTimer = 0;
     _decisionTimer = 0;
     _requested = false;
@@ -224,6 +241,78 @@ void BotActivity::Stop()
     _storyWaiting = false;
     _storyEnding = false;
     _storyTimer = 0;
+}
+
+bool BotActivity::JoinEvent(uint32 eventId, Position const& rally)
+{
+    if (!_me->IsInWorld() || !_me->IsAlive() || !_ai->IsWanderer() || !_ai->IAmFree() || _ai->IsDuringTeleport() ||
+        _ai->GetBG())
+        return false;
+
+    Stop();
+    _mode = BOT_ACTIVITY_EVENT;
+    _modeTimer = EVENT_MAX_TIME;
+    _eventId = eventId;
+    _eventAttack = false;
+    _eventMoveTimer = 0;
+
+    // everyone gets an own spot around the rally point
+    float angle = rand_norm() * 2.0f * float(M_PI);
+    float dist = frand(1.0f, EVENT_RALLY_SPREAD);
+    _eventRally.Relocate(rally.GetPositionX() + dist * std::cos(angle), rally.GetPositionY() + dist * std::sin(angle),
+        rally.GetPositionZ());
+    _me->UpdateAllowedPositionZ(_eventRally.m_positionX, _eventRally.m_positionY, _eventRally.m_positionZ);
+    _eventRally.SetOrientation(_eventRally.GetAbsoluteAngle(&rally));
+    return true;
+}
+
+void BotActivity::StartEventAttack(Position const& target)
+{
+    if (_mode != BOT_ACTIVITY_EVENT)
+        return;
+
+    float angle = rand_norm() * 2.0f * float(M_PI);
+    float dist = frand(0.0f, EVENT_TARGET_SPREAD);
+    _eventTarget.Relocate(target.GetPositionX() + dist * std::cos(angle),
+        target.GetPositionY() + dist * std::sin(angle), target.GetPositionZ());
+    _me->UpdateAllowedPositionZ(_eventTarget.m_positionX, _eventTarget.m_positionY, _eventTarget.m_positionZ);
+    _eventAttack = true;
+    _eventMoveTimer = 0;
+}
+
+// walks to the rally point or the target, fighting is left to the bot AI
+void BotActivity::UpdateEvent(uint32 diff)
+{
+    if (_modeTimer <= diff)
+    {
+        Stop();
+        return;
+    }
+    _modeTimer -= diff;
+
+    if (!_me->IsAlive() || _me->IsInCombat() || !_me->getAttackers().empty())
+        return;
+
+    // no wandering meanwhile, short enough to keep looking for enemies around (see bot_ai::_getTargets())
+    _ai->HoldPosition(HOLD_POSITION_TIME);
+
+    Position const& dest = _eventAttack ? _eventTarget : _eventRally;
+    if (_me->GetExactDist2d(dest) < 2.0f)
+    {
+        if (!_me->isMoving() && !_eventAttack && std::abs(_me->GetOrientation() - dest.GetOrientation()) > 0.1f)
+            _me->SetFacingTo(dest.GetOrientation());
+        return;
+    }
+
+    if (_eventMoveTimer > diff)
+    {
+        _eventMoveTimer -= diff;
+        return;
+    }
+    _eventMoveTimer = EVENT_REPATH_DELAY;
+
+    if (!_me->isMoving() || _eventAttack)
+        _ai->BotMovement(BOT_MOVE_POINT, &dest, nullptr, true);
 }
 
 bool BotActivity::RequestRest(Player const* /*player*/)

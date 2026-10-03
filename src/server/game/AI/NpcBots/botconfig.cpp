@@ -149,6 +149,21 @@ static uint32 _activitiesIntervalMin;
 static uint32 _activitiesIntervalMax;
 static uint32 _activitiesRestChance;
 static uint32 _activitiesRoleplayChance;
+static bool _memoryEnable;
+static std::string _memoryFile;
+static uint32 _memorySaveInterval;
+static bool _groupFinderEnable;
+static uint32 _groupFinderInterval;
+static uint32 _groupFinderChance;
+static bool _questHelpEnable;
+static uint32 _questHelpChance;
+static uint32 _questHelpCooldown;
+static bool _worldEventsEnable;
+static uint32 _worldEventsInterval;
+static uint32 _worldEventsMaxBots;
+static bool _raidOffersEnable;
+static uint32 _raidOffersInterval;
+static uint32 _raidOffersSize;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
@@ -501,6 +516,22 @@ private:
         _activitiesIntervalMax          = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.IntervalMax", 300);
         _activitiesRestChance           = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.RestChance", 15);
         _activitiesRoleplayChance       = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.RoleplayChance", 10);
+        _memoryEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.Memory.Enable", true);
+        _memoryFile                     = sConfigMgr->GetStringDefault("NpcBot.Chatter.Memory.File",
+            "npcbots_memory.json");
+        _memorySaveInterval             = sConfigMgr->GetIntDefault("NpcBot.Chatter.Memory.SaveInterval", 300);
+        _groupFinderEnable              = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.GroupFinder.Enable", true);
+        _groupFinderInterval            = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.GroupFinder.Interval", 900);
+        _groupFinderChance              = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.GroupFinder.Chance", 50);
+        _questHelpEnable                = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.QuestHelp.Enable", true);
+        _questHelpChance                = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.QuestHelp.Chance", 25);
+        _questHelpCooldown              = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.QuestHelp.Cooldown", 300);
+        _worldEventsEnable              = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Events.Enable", true);
+        _worldEventsInterval            = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Events.Interval", 1200);
+        _worldEventsMaxBots             = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Events.MaxBots", 5);
+        _raidOffersEnable               = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.Raids.Enable", true);
+        _raidOffersInterval             = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Raids.Interval", 3600);
+        _raidOffersSize                 = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Raids.Size", 10);
         _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
         _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
         _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
@@ -1373,6 +1404,66 @@ uint32 BotCfg::GetBotActivitiesRoleplayChance()
 {
     return _activitiesRoleplayChance;
 }
+bool BotCfg::IsBotMemoryEnabled()
+{
+    return _memoryEnable;
+}
+std::string const& BotCfg::GetBotMemoryFile()
+{
+    return _memoryFile;
+}
+uint32 BotCfg::GetBotMemorySaveInterval()
+{
+    return _memorySaveInterval;
+}
+bool BotCfg::IsBotGroupFinderEnabled()
+{
+    return _groupFinderEnable;
+}
+uint32 BotCfg::GetBotGroupFinderInterval()
+{
+    return _groupFinderInterval;
+}
+uint32 BotCfg::GetBotGroupFinderChance()
+{
+    return _groupFinderChance;
+}
+bool BotCfg::IsBotQuestHelpEnabled()
+{
+    return _questHelpEnable;
+}
+uint32 BotCfg::GetBotQuestHelpChance()
+{
+    return _questHelpChance;
+}
+uint32 BotCfg::GetBotQuestHelpCooldown()
+{
+    return _questHelpCooldown;
+}
+bool BotCfg::IsBotWorldEventsEnabled()
+{
+    return _worldEventsEnable;
+}
+uint32 BotCfg::GetBotWorldEventsInterval()
+{
+    return _worldEventsInterval;
+}
+uint32 BotCfg::GetBotWorldEventsMaxBots()
+{
+    return _worldEventsMaxBots;
+}
+bool BotCfg::IsBotRaidOffersEnabled()
+{
+    return _raidOffersEnable;
+}
+uint32 BotCfg::GetBotRaidOffersInterval()
+{
+    return _raidOffersInterval;
+}
+uint32 BotCfg::GetBotRaidOffersSize()
+{
+    return _raidOffersSize;
+}
 std::string const& BotCfg::GetBotChatterLocale()
 {
     return _chatterLocale;
@@ -1582,6 +1673,22 @@ uint32 BotCfg::GetEngageDelayDPSDefault()
 uint32 BotCfg::GetEngageDelayHealDefault()
 {
     return _npcBotEngageDelayHeal_default;
+}
+
+bool BotCfg::IsMapIdAllowedForBots(uint32 mapId)
+{
+    MapEntry const* entry = sMapStore.LookupEntry(mapId);
+    if (!entry)
+        return false;
+
+    if ((!_enableNpcBotsBGs && entry->IsBattleground()) ||
+        (!_enableNpcBotsArenas && entry->IsBattleArena()) ||
+        (!_enableNpcBotsDungeons && entry->IsNonRaidDungeon()) ||
+        (!_enableNpcBotsRaids && entry->IsRaid()))
+        return false;
+
+    return !entry->IsDungeon() || _disabled_instance_maps.empty() ||
+        std::ranges::find(_disabled_instance_maps, mapId) == _disabled_instance_maps.cend();
 }
 
 bool BotCfg::IsMapAllowedForBots(Map const* map)

@@ -3,9 +3,11 @@
 #include "botconfig.h"
 #include "botdatamgr.h"
 #include "botdefine.h"
+#include "botmemory.h"
 #include "botmgr.h"
 #include "botopenai.h"
 #include "bottext.h"
+#include "botworldevents.h"
 #include "CellImpl.h"
 #include "Channel.h"
 #include "Chat.h"
@@ -133,6 +135,25 @@ namespace
         return true;
     }
 
+    // a random non-empty variant of one text id
+    bool SelectTextVariant(uint32 textId, BotChatter::ChatterText& text)
+    {
+        GossipText const* gossip = sObjectMgr->GetGossipText(textId);
+        if (!gossip)
+            return false;
+
+        std::vector<uint8> slots;
+        for (uint8 i = 0; i < MAX_GOSSIP_TEXT_OPTIONS; ++i)
+            if (!gossip->Options[i].Text_0.empty())
+                slots.push_back(i);
+        if (slots.empty())
+            return false;
+
+        text.textId = textId;
+        text.slot = Acore::Containers::SelectRandomContainerElement(slots);
+        return true;
+    }
+
     uint32 GetClassTextId(uint8 botClass)
     {
         switch (botClass)
@@ -224,8 +245,8 @@ namespace
 
     constexpr std::size_t CHATTER_AI_MAX_TEXT_LENGTH = 240;
 
-    // mood and relationships to players per bot entry, kept in memory only: they survive the bot being despawned
-    // and spawned again, not a server restart. World and map threads
+    // mood and relationships to players per bot (BotMemory::GetSocialKey()), saved by BotMemory: they survive
+    // the bot being despawned and spawned again and server restarts. World and map threads
     struct Relationship
     {
         std::string name;
@@ -606,7 +627,7 @@ BotChatter::BotChatter(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot),
 
 void BotChatter::TextBuilder::operator()(WorldPacket& data, LocaleConstant locale) const
 {
-    std::string text = _text.textId ? _chatter.FormatText(_text.textId, _text.slot, locale, _subject) : _text.raw;
+    std::string text = _text.textId ? _chatter.FormatText(_text, locale, _subject) : _text.raw;
 
     switch (_msgType)
     {
@@ -881,7 +902,10 @@ bool BotChatter::OnPlayerWhisper(Player* player, std::string const& botName, std
     player->SendDirectMessage(&data);
 
     BotChatter& chatter = bot->GetBotAI()->GetChatter();
-    chatter.ReplyToWhisper(player, message);
+
+    // yes or no to an invite of the bot
+    if (!BotWorldEvents::OnPlayerWhisper(player, botName, message))
+        chatter.ReplyToWhisper(player, message);
     Remember(chatter._whisperMemory, player->GetName() + " to you", message);
     return true;
 }
@@ -1699,15 +1723,17 @@ void BotChatter::OnHired(Player const* owner)
 
 void BotChatter::ChangeMood(int32 delta)
 {
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
     std::lock_guard<std::mutex> lock(SocialLock);
-    SocialState& state = SocialStates[_me->GetEntry()];
+    SocialState& state = SocialStates[key];
     state.mood = std::clamp(state.mood + delta, -MOOD_LIMIT, MOOD_LIMIT);
 }
 
 BotMood BotChatter::GetMood() const
 {
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
     std::lock_guard<std::mutex> lock(SocialLock);
-    auto itr = SocialStates.find(_me->GetEntry());
+    auto itr = SocialStates.find(key);
     if (itr == SocialStates.end())
         return BOT_MOOD_NORMAL;
     if (itr->second.activeMinutes >= TIRED_MINUTES)
@@ -1722,8 +1748,9 @@ BotMood BotChatter::GetMood() const
 // every minute: the mood fades, being on the move makes tired, sitting down rests
 void BotChatter::UpdateSocial()
 {
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
     std::lock_guard<std::mutex> lock(SocialLock);
-    SocialState& state = SocialStates[_me->GetEntry()];
+    SocialState& state = SocialStates[key];
     if (roll_chance_i(20))
         state.mood += state.mood > 0 ? -1 : state.mood < 0 ? 1 : 0;
 
@@ -1738,8 +1765,9 @@ void BotChatter::NoteRelation(Player const* player, BotRelationEvent event)
     if (!player)
         return;
 
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
     std::lock_guard<std::mutex> lock(SocialLock);
-    SocialState& state = SocialStates[_me->GetEntry()];
+    SocialState& state = SocialStates[key];
     Relationship& relation = state.relations[player->GetGUID()];
     relation.name = player->GetName();
     relation.lastSeen = GameTime::GetGameTime().count();
@@ -1770,20 +1798,68 @@ void BotChatter::NoteRelation(Player const* player, BotRelationEvent event)
 
 int32 BotChatter::GetAffinity(ObjectGuid player) const
 {
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
     std::lock_guard<std::mutex> lock(SocialLock);
-    auto itr = SocialStates.find(_me->GetEntry());
+    auto itr = SocialStates.find(key);
     if (itr == SocialStates.end())
         return 0;
     auto relation = itr->second.relations.find(player);
     return relation != itr->second.relations.end() ? relation->second.affinity : 0;
 }
 
+std::vector<BotChatter::SocialRecord> BotChatter::ExportSocial()
+{
+    std::vector<SocialRecord> records;
+
+    std::lock_guard<std::mutex> lock(SocialLock);
+    records.reserve(SocialStates.size());
+    for (auto const& [key, state] : SocialStates)
+    {
+        SocialRecord& record = records.emplace_back();
+        record.key = key;
+        record.mood = state.mood;
+        record.activeMinutes = state.activeMinutes;
+        for (auto const& [guid, r] : state.relations)
+            record.relations.push_back({ guid.GetCounter(), r.name, r.affinity, r.talks, r.fights, r.attacks,
+                r.killedMe, r.killedThem, r.stories, r.friendly, r.hostile, r.hired, r.lastSeen });
+    }
+    return records;
+}
+
+void BotChatter::ImportSocial(std::vector<SocialRecord> const& records)
+{
+    std::lock_guard<std::mutex> lock(SocialLock);
+    for (SocialRecord const& record : records)
+    {
+        SocialState& state = SocialStates[record.key];
+        state.mood = std::clamp(record.mood, -MOOD_LIMIT, MOOD_LIMIT);
+        state.activeMinutes = record.activeMinutes;
+        for (RelationRecord const& r : record.relations)
+        {
+            Relationship& relation = state.relations[ObjectGuid::Create<HighGuid::Player>(r.player)];
+            relation.name = r.name;
+            relation.affinity = std::clamp(r.affinity, -AFFINITY_LIMIT, AFFINITY_LIMIT);
+            relation.talks = r.talks;
+            relation.fights = r.fights;
+            relation.attacks = r.attacks;
+            relation.killedMe = r.killedMe;
+            relation.killedThem = r.killedThem;
+            relation.stories = r.stories;
+            relation.friendly = r.friendly;
+            relation.hostile = r.hostile;
+            relation.hired = r.hired;
+            relation.lastSeen = r.lastSeen;
+        }
+    }
+}
+
 std::string BotChatter::GetRelationshipText(Player const* player) const
 {
     std::string const& name = player->GetName();
 
+    const uint32 key = BotMemory::GetSocialKey(_me->GetEntry());
     std::lock_guard<std::mutex> lock(SocialLock);
-    auto itr = SocialStates.find(_me->GetEntry());
+    auto itr = SocialStates.find(key);
     if (itr == SocialStates.end())
         return "You never met " + name + " before. ";
     auto relation = itr->second.relations.find(player->GetGUID());
@@ -1964,6 +2040,49 @@ bool BotChatter::SayToZoneChannel(ChatterText const& text, WorldObject const* su
     return true;
 }
 
+bool BotChatter::HasText(uint32 textId)
+{
+    ChatterText text;
+    return SelectTextVariant(textId, text);
+}
+
+bool BotChatter::MatchesKeywordText(std::string_view message, uint32 textId)
+{
+    return MatchesKeywords(NormalizeForMatching(message), textId);
+}
+
+LocaleConstant BotChatter::GetServerLocale()
+{
+    return GetChatterLocale();
+}
+
+bool BotChatter::Announce(uint32 textId, TextVars vars, ChatMsg msgType, Player* target)
+{
+    ChatterText text;
+    if (!_me->IsInWorld() || !SelectTextVariant(textId, text))
+        return false;
+    text.vars = std::move(vars);
+
+    switch (msgType)
+    {
+        case CHAT_MSG_MONSTER_SAY:
+        case CHAT_MSG_MONSTER_YELL:
+            return SayNearby(text, target, msgType);
+        case CHAT_MSG_CHANNEL:
+            return SayToZoneChannel(text, target, true);
+        case CHAT_MSG_WHISPER:
+            return target && target->GetSession() && WhisperTo(text, target);
+        case CHAT_MSG_PARTY:
+        case CHAT_MSG_RAID:
+        {
+            Group const* group = _ai->GetGroup();
+            return SayToGroup(text, target, (group && group->isRaidGroup()) ? CHAT_MSG_RAID : CHAT_MSG_PARTY);
+        }
+        default:
+            return false;
+    }
+}
+
 // text emote with its animation, seen by players around the bot
 void BotChatter::PerformEmote(uint32 textEmote, Unit* target)
 {
@@ -2054,16 +2173,20 @@ void BotChatter::PauseToType(ChatterText const& text, WorldObject const* subject
 
 std::string BotChatter::GetDefaultText(ChatterText const& text, WorldObject const* subject) const
 {
-    return text.textId ? FormatText(text.textId, text.slot, GetChatterLocale(), subject) : text.raw;
+    return text.textId ? FormatText(text, GetChatterLocale(), subject) : text.raw;
 }
 
 // texts in the server language, names localized for the listener
-std::string BotChatter::FormatText(uint32 textId, uint8 slot, LocaleConstant locale, WorldObject const* subject) const
+std::string BotChatter::FormatText(ChatterText const& chatterText, LocaleConstant locale,
+    WorldObject const* subject) const
 {
     LocaleConstant textLocale = GetChatterLocale();
-    std::string text = GetTextVariant(textId, slot, textLocale);
+    std::string text = GetTextVariant(chatterText.textId, chatterText.slot, textLocale);
     if (text.find('%') == std::string::npos)
         return text;
+
+    for (auto const& [token, value] : chatterText.vars)
+        ReplaceAll(text, token, value);
 
     LocaleConstant dbcLocale = sWorld->GetAvailableDbcLocale(textLocale);
 
