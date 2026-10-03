@@ -6,6 +6,7 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GameTime.h"
+#include "GuildMgr.h"
 #include "Map.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -47,6 +48,22 @@ namespace
     std::mutex GossipLock;
     std::vector<BotDeed> Deeds;
     std::unordered_map<uint32 /*player*/, uint32> Fame;
+    std::unordered_map<uint32 /*guild*/, BotNews::GuildRecord> Guilds;
+
+    constexpr int32 GUILD_STANDING_LIMIT = 200;
+    constexpr int32 GUILD_DEED_STANDING = 3;    // per point of fame
+    constexpr int32 GUILD_KNOWN = 15;
+
+    void AddGuildStanding(uint32 guildId, std::string const& name, int32 delta)
+    {
+        if (!guildId || !delta)
+            return;
+        BotNews::GuildRecord& guild = Guilds[guildId];
+        guild.guildId = guildId;
+        if (!name.empty())
+            guild.name = name;
+        guild.standing = std::clamp(guild.standing + delta, -GUILD_STANDING_LIMIT, GUILD_STANDING_LIMIT);
+    }
 
     void ReplaceAll(std::string& text, std::string_view token, std::string_view value)
     {
@@ -95,6 +112,9 @@ void BotNews::RecordDeed(Player const* player, BotDeedType type, std::string con
     deed.time = now;
 
     Fame[counter] += DeedFame[type];
+    if (BotCfg::IsBotGuildReputationEnabled())
+        AddGuildStanding(player->GetGuildId(), sGuildMgr->GetGuildNameById(player->GetGuildId()),
+            int32(DeedFame[type]) * GUILD_DEED_STANDING);
 
     if (Deeds.size() > MAX_DEEDS)
         Deeds.erase(Deeds.begin());
@@ -243,6 +263,55 @@ std::string BotNews::GetRareRumor(Creature const* bot)
     ReplaceAll(text, "%enemy", name);
     ReplaceAll(text, "%place", place);
     return text;
+}
+
+void BotNews::NoteGuildStanding(Player const* player, int32 delta)
+{
+    uint32 guildId = player->GetGuildId();
+    if (!guildId || !delta || !BotCfg::IsBotGuildReputationEnabled())
+        return;
+
+    std::string name = sGuildMgr->GetGuildNameById(guildId);
+    std::lock_guard<std::mutex> lock(GossipLock);
+    AddGuildStanding(guildId, name, delta);
+}
+
+int32 BotNews::GetGuildStanding(uint32 guildId)
+{
+    if (!guildId || !BotCfg::IsBotGuildReputationEnabled())
+        return 0;
+
+    std::lock_guard<std::mutex> lock(GossipLock);
+    auto itr = Guilds.find(guildId);
+    return itr != Guilds.end() ? itr->second.standing : 0;
+}
+
+std::string BotNews::GetGuildContext(Player const* player)
+{
+    int32 standing = GetGuildStanding(player->GetGuildId());
+    if (standing > -GUILD_KNOWN && standing < GUILD_KNOWN)
+        return "";
+
+    std::string name = sGuildMgr->GetGuildNameById(player->GetGuildId());
+    return "The guild <" + name + "> of " + player->GetName() + " has a " +
+        (standing >= GUILD_KNOWN ? "good" : "bad") + " reputation among adventurers. ";
+}
+
+std::vector<BotNews::GuildRecord> BotNews::ExportGuilds()
+{
+    std::lock_guard<std::mutex> lock(GossipLock);
+    std::vector<GuildRecord> guilds;
+    for (auto const& [_, guild] : Guilds)
+        guilds.push_back(guild);
+    return guilds;
+}
+
+void BotNews::ImportGuilds(std::vector<GuildRecord> const& guilds)
+{
+    std::lock_guard<std::mutex> lock(GossipLock);
+    for (GuildRecord const& guild : guilds)
+        if (guild.guildId)
+            Guilds[guild.guildId] = guild;
 }
 
 std::vector<BotDeed> BotNews::ExportDeeds()

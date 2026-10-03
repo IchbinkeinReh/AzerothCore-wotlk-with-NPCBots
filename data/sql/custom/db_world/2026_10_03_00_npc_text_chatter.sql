@@ -35,4 +35,6 @@ INSERT INTO `npc_text` (`ID`,`text0_0`,`text1_0`,`text2_0`,`text3_0`,`text4_0`,`
 (@CHATTER2_TEXTS_START+27,'a race',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'-1'),
 (@CHATTER2_TEXTS_START+28,'a drinking contest',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'-1'),
 (@CHATTER2_TEXTS_START+29,'an arm wrestling match',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'-1'),
-(@CHATTER2_TEXTS_START+30,'Hnngh...!','Not... yet...!','You are stronger than you look!',NULL,NULL,NULL,NULL,NULL,'-1');
+(@CHATTER2_TEXTS_START+30,'Hnngh...!','Not... yet...!','You are stronger than you look!',NULL,NULL,NULL,NULL,NULL,'-1'),
+(@CHATTER2_TEXTS_START+31,'Ah, someone from <%guild>! Good folk, I have heard.','<%guild>! Your guild has quite the reputation. A good one.','Greetings to <%guild>! We could use more like you.',NULL,NULL,NULL,NULL,NULL,'-1'),
+(@CHATTER2_TEXTS_START+32,'<%guild>? I have heard enough about your lot.','Hmpf. <%guild>. Keep your distance.','Ah, <%guild>. Watch your purse, everyone.',NULL,NULL,NULL,NULL,NULL,'-1');

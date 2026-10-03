@@ -17823,6 +17823,10 @@ bool bot_ai::GlobalUpdate(uint32 diff)
     _chatter.Update(diff);
     _activity.Update(diff);
 
+    // flying a flight path or casting the hearthstone: nothing may interrupt it
+    if (_activity.IsTravelling())
+        return false;
+
     if (doHealth)
     {
         doHealth = false;
@@ -20543,6 +20547,33 @@ void bot_ai::ClearWanderer()
     _wanderer = false;
     if (botPet)
         botPet->GetBotPetAI()->ClearWanderer();
+}
+
+void bot_ai::RestartWanderingHere()
+{
+    if (!IsWanderer())
+        return;
+
+    if (WanderNode const* node = GetClosestWanderNode())
+    {
+        _travel_node_last = nullptr;
+        _travel_node_cur = node;
+        homepos.Relocate(node);
+    }
+}
+
+bool bot_ai::HearthstoneTo(WanderNode const* node)
+{
+    if (!IsWanderer() || !node || me->IsInCombat() || me->HasUnitState(UNIT_STATE_CASTING))
+        return false;
+
+    // the spell teleports the bot to its current travel node, see WANDERER_HEARTHSTONE
+    _travel_node_last = _travel_node_cur;
+    _travel_node_cur = node;
+    homepos.Relocate(node);
+    me->StopMoving();
+    me->CastSpell(me, WANDERER_HEARTHSTONE);
+    return me->HasUnitState(UNIT_STATE_CASTING);
 }
 
 bool bot_ai::IsGeneratedBot() const

@@ -31,11 +31,17 @@
 #include "AchievementMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellMgr.h"
+#include "GuildMgr.h"
 #include "World.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
 
 #include <array>
+#include <boost/version.hpp>
+#if BOOST_VERSION >= 107500 && __has_include(<boost/json.hpp>)
+#include <boost/json.hpp>
+#define BOT_CHATTER_JSON 1
+#endif
 #include <atomic>
 #include <mutex>
 #include <set>
@@ -324,6 +330,33 @@ namespace
             default:                 return 0;
         }
     }
+
+    // bot conversations: waiting for OpenAI (map threads ask), then the lines one after another (world thread)
+    struct PendingConversation
+    {
+        uint32 speaker;
+        uint32 partner;
+        time_t expires;
+    };
+    std::mutex ConversationsLock;
+    std::vector<PendingConversation> PendingConversations;
+    std::unordered_map<ObjectGuid, time_t> ConversationCooldowns;
+
+    struct ScheduledLine
+    {
+        uint32 bot;
+        uint32 partner;
+        std::string text;
+        uint64 time;
+    };
+    std::vector<ScheduledLine> ScheduledLines;
+
+    constexpr float CONVERSATION_PARTNER_RANGE = 8.0f;
+    constexpr uint32 CONVERSATION_MAX_LINES = 6;
+    constexpr uint32 CONVERSATION_MAX_OUTPUT_TOKENS = 1000;
+    constexpr time_t CONVERSATION_PENDING_TIMEOUT = MINUTE;
+    constexpr int32 GUILD_REPUTATION_KNOWN = 15;
+    constexpr uint32 GUILD_GREET_CHANCE = 40;
 
     // a player's remarkable things a bot already talked about, for all bots, world and map threads
     std::mutex CommentsLock;
@@ -818,6 +851,7 @@ void BotChatter::Update(uint32 diff)
         uint32 interval = urand(BotCfg::GetBotChatterIdleIntervalMin(), BotCfg::GetBotChatterIdleIntervalMax());
         _idleTimer = interval * IN_MILLISECONDS;
         if (CanChat(true) && roll_chance_i(BotCfg::GetBotChatterIdleChance()) &&
+            !(roll_chance_i(BotCfg::GetBotConversationsChance()) && StartConversation()) &&
             !(roll_chance_i(NEWS_TALK_CHANCE) && TalkAboutNews()) &&
             !(roll_chance_i(RUMOR_TALK_CHANCE) && TalkAboutRumor()) &&
             !(roll_chance_i(LOOKS_TALK_CHANCE) && TalkAboutLooks()) &&
@@ -1307,6 +1341,26 @@ bool BotChatter::IsAIPending() const
 
 void BotChatter::ProcessAIReplies()
 {
+    // lines of bot conversations, one after another
+    uint64 nowMs = uint64(GameTime::GetGameTimeMS().count());
+    for (auto itr = ScheduledLines.begin(); itr != ScheduledLines.end();)
+    {
+        if (itr->time > nowMs)
+        {
+            ++itr;
+            continue;
+        }
+        Creature* bot = const_cast<Creature*>(BotDataMgr::FindBot(itr->bot));
+        if (bot && bot->IsInWorld() && bot->IsAlive() && !bot->IsInCombat() && bot->GetBotAI())
+        {
+            if (Creature const* partner = BotDataMgr::FindBot(itr->partner);
+                partner && partner->IsInWorld() && partner->GetMap() == bot->GetMap() && !bot->isMoving())
+                bot->SetFacingTo(bot->GetAbsoluteAngle(partner));
+            bot->GetBotAI()->GetChatter().SayRaw(itr->text, CHAT_MSG_MONSTER_SAY);
+        }
+        itr = ScheduledLines.erase(itr);
+    }
+
     BotAIResult result;
     while (BotOpenAI::PollResult(result))
     {
@@ -1318,6 +1372,11 @@ void BotChatter::ProcessAIReplies()
         if (result.kind == BOT_AI_KIND_VILLAIN)
         {
             BotVillains::OnVillainGenerated(result);
+            continue;
+        }
+        if (result.kind == BOT_AI_KIND_CONVERSATION)
+        {
+            OnConversation(result);
             continue;
         }
 
@@ -1449,7 +1508,7 @@ std::string BotChatter::BuildAIInstructions(Player const* player, BotChatterRepl
 
     ss << GetRelationshipText(player) << GetBondsText()
         << BotNews::GetNewsContext(BotDataMgr::GetTeamIdForFaction(_me->GetFaction()), player->GetGUID())
-        << GetNotableText(player);
+        << GetNotableText(player) << BotNews::GetGuildContext(player);
 
     ss << player->GetName() << ", a level " << uint32(player->GetLevel()) << ' '
         << GetEnglishRaceName(player->GetRace()) << ' ' << GetEnglishClassName(player->GetClass()) << ", talks to you ";
@@ -1667,6 +1726,29 @@ bool BotChatter::TryGreetNearbyPlayer()
         bool known = affinity >= AFFINITY_LIKE || affinity <= -AFFINITY_LIKE;
         if (!known && !_me->IsWithinDistInMap(player, CHATTER_GREET_RANGE))
             continue;
+
+        // a member of a guild with a reputation
+        if (!known && player->GetGuildId() && roll_chance_i(GUILD_GREET_CHANCE))
+        {
+            int32 standing = BotNews::GetGuildStanding(player->GetGuildId());
+            if (standing >= GUILD_REPUTATION_KNOWN || standing <= -GUILD_REPUTATION_KNOWN)
+            {
+                _greeted[player->GetGUID()] = now;
+                BotChatter::TextVars vars{ { "%guild", sGuildMgr->GetGuildNameById(player->GetGuildId()) } };
+                if (standing > 0)
+                {
+                    PerformEmote(TEXT_EMOTE_WAVE, player);
+                    SayTextNearby(BOT_TEXT_GUILD_PRAISE, player, std::move(vars));
+                }
+                else
+                {
+                    SayTextNearby(BOT_TEXT_GUILD_SNUB, player, std::move(vars));
+                    if (!_me->isMoving())
+                        _me->SetFacingTo(Position::NormalizeOrientation(_me->GetAbsoluteAngle(player) + float(M_PI)));
+                }
+                return true;
+            }
+        }
 
         // a famous player the bot only heard of
         if (!known && affinity > -AFFINITY_LIKE && BotNews::IsFamous(player->GetGUID()) &&
@@ -2013,6 +2095,160 @@ std::string BotChatter::GetNotableText(Player const* player)
     return ss.str();
 }
 
+bool BotChatter::StartConversation()
+{
+    if (!BotCfg::IsBotConversationsEnabled() || !BotOpenAI::IsEnabled() || !_ai->IAmFree() || _me->IsInCombat() ||
+        _ai->GetActivity().IsInEvent() || _ai->GetActivity().IsTravelling())
+        return false;
+
+    // someone to listen
+    Player* listener = nullptr;
+    float range = sWorld->getFloatConfig(CONFIG_LISTEN_RANGE_SAY);
+    Acore::AnyPlayerInObjectRangeCheck playerCheck(_me, range, true, true);
+    Acore::PlayerSearcher<Acore::AnyPlayerInObjectRangeCheck> playerSearcher(_me, listener, playerCheck);
+    Cell::VisitObjects(_me, playerSearcher, range);
+    if (!listener || _me->IsHostileTo(listener))
+        return false;
+
+    // someone to talk to
+    std::list<Creature*> bots;
+    NearbyBotCheck check(_me, CONVERSATION_PARTNER_RANGE);
+    Acore::CreatureListSearcher<NearbyBotCheck> searcher(_me, bots, check);
+    Cell::VisitObjects(_me, searcher, CONVERSATION_PARTNER_RANGE);
+    Creature* partner = nullptr;
+    for (Creature* bot : bots)
+        if (bot != _me && bot->GetBotAI() && bot->GetBotAI()->IAmFree() && !bot->IsInCombat() &&
+            !_me->IsHostileTo(bot))
+            partner = bot;
+    if (!partner)
+        return false;
+
+    time_t now = GameTime::GetGameTime().count();
+    {
+        std::lock_guard<std::mutex> lock(ConversationsLock);
+        auto cooldown = ConversationCooldowns.find(listener->GetGUID());
+        if ((cooldown != ConversationCooldowns.end() && cooldown->second > now) || !PendingConversations.empty())
+            return false;
+    }
+
+    auto describe = [](Creature const* bot) {
+        bot_ai const* ai = bot->GetBotAI();
+        std::ostringstream ss;
+        ss << bot->GetName() << ", a level " << uint32(bot->GetLevel()) << ' '
+            << GetEnglishRaceName(ai->GetPlayerRace()) << ' ' << GetEnglishClassName(ai->GetBotClass());
+        std::string const& guild = BotDataMgr::GetBotGuildName(bot->GetEntry());
+        if (!guild.empty())
+            ss << " of the guild <" << guild << '>';
+        switch (const_cast<Creature*>(bot)->GetBotAI()->GetChatter().GetMood())
+        {
+            case BOT_MOOD_CHEERFUL: ss << ", cheerful";      break;
+            case BOT_MOOD_GRUMPY:   ss << ", grumpy";        break;
+            case BOT_MOOD_TIRED:    ss << ", tired";         break;
+            default:                                          break;
+        }
+        return ss.str();
+    };
+
+    int32 bond = GetBondAffinity(partner);
+    std::ostringstream ss;
+    ss << "Write a short conversation between two adventurers in World of Warcraft: Wrath of the Lich King, in "
+        << GetLanguageName(GetChatterLocale()) << ". They stand in " << GetEnglishZoneName(_me->GetZoneId()) << ".\n"
+        << "A is " << describe(_me) << ".\nB is " << describe(partner) << ".\n"
+        << (bond >= BOND_FRIEND ? "They are good friends. " : bond <= -BOND_FRIEND ? "They are rivals who cannot "
+            "stand each other. " : "They know each other a little. ");
+
+    TeamId team = BotDataMgr::GetTeamIdForFaction(_me->GetFaction());
+    std::string news = BotNews::GetNewsContext(team, listener->GetGUID());
+    std::string rumor = BotNews::GetRareRumor(_me);
+    BotVillainRef villain;
+    ss << "Possible topics: the weather, the place, their travels and their mood";
+    if (!rumor.empty())
+        ss << ", a rumor (" << rumor << ")";
+    if (BotVillains::GetVillainFor(BotVillains::ANY_THEME, _me->GetLevel(), _me->GetMapId(), villain))
+        ss << ", the villain " << villain.name << ' ' << villain.title << " and the " << villain.cult;
+    ss << ".\n";
+    if (!news.empty())
+        ss << "News they heard (about " << listener->GetName() << ", who stands nearby, and others): " << news
+            << "\n";
+    ss << "Write 4 to 6 lines, A and B taking turns, each line at most 140 characters, natural spoken chat in "
+        << "character, no markdown, no quotes, no emojis, never mention being an AI or a game.";
+
+    BotAIRequest request;
+    request.botEntry = _me->GetEntry();
+    request.playerGuid = listener->GetGUID();
+    request.kind = BOT_AI_KIND_CONVERSATION;
+    request.schemaName = "conversation";
+    request.schema = R"({"type":"object","properties":{"lines":{"type":"array","items":{"type":"object",)"
+        R"("properties":{"speaker":{"type":"string","enum":["A","B"]},"text":{"type":"string"}},)"
+        R"("required":["speaker","text"],"additionalProperties":false}}},"required":["lines"],)"
+        R"("additionalProperties":false})";
+    request.maxOutputTokens = CONVERSATION_MAX_OUTPUT_TOKENS;
+    request.instructions = ss.str();
+    request.input.push_back({ false, "(Write the conversation.)" });
+    if (!BotOpenAI::Enqueue(std::move(request)))
+        return false;
+
+    std::lock_guard<std::mutex> lock(ConversationsLock);
+    PendingConversations.push_back({ _me->GetEntry(), partner->GetEntry(), now + CONVERSATION_PENDING_TIMEOUT });
+    ConversationCooldowns[listener->GetGUID()] = now + BotCfg::GetBotConversationsCooldown();
+    std::erase_if(ConversationCooldowns, [now](auto const& entry) { return entry.second <= now; });
+    return true;
+}
+
+void BotChatter::OnConversation(BotAIResult const& result)
+{
+    PendingConversation conversation;
+    {
+        time_t now = GameTime::GetGameTime().count();
+        std::lock_guard<std::mutex> lock(ConversationsLock);
+        std::erase_if(PendingConversations, [now](PendingConversation const& pending) {
+            return pending.expires <= now;
+        });
+        auto itr = std::ranges::find(PendingConversations, result.botEntry, &PendingConversation::speaker);
+        if (itr == PendingConversations.end())
+            return;
+        conversation = *itr;
+        PendingConversations.erase(itr);
+    }
+
+#ifdef BOT_CHATTER_JSON
+    boost::system::error_code ec;
+    boost::json::value root = boost::json::parse(result.text, ec);
+    boost::json::object const* obj = ec ? nullptr : root.if_object();
+    boost::json::value const* lines = obj ? obj->if_contains("lines") : nullptr;
+    if (!lines || !lines->is_array())
+        return;
+
+    // both stand still while talking
+    uint64 time = uint64(GameTime::GetGameTimeMS().count()) + 1000;
+    uint32 count = 0;
+    for (boost::json::value const& value : lines->as_array())
+    {
+        boost::json::object const* line = value.if_object();
+        boost::json::value const* speaker = line ? line->if_contains("speaker") : nullptr;
+        boost::json::value const* text = line ? line->if_contains("text") : nullptr;
+        if (!speaker || !text || !speaker->is_string() || !text->is_string())
+            continue;
+
+        std::string sanitized = SanitizeAIText(std::string(text->as_string()));
+        if (sanitized.empty())
+            continue;
+
+        bool first = speaker->as_string() == "A";
+        ScheduledLines.push_back({ first ? conversation.speaker : conversation.partner,
+            first ? conversation.partner : conversation.speaker, sanitized, time });
+        time += 2500 + 40 * sanitized.size();
+        if (++count >= CONVERSATION_MAX_LINES)
+            break;
+    }
+
+    uint32 duration = uint32(time - uint64(GameTime::GetGameTimeMS().count()));
+    for (uint32 entry : { conversation.speaker, conversation.partner })
+        if (Creature const* bot = BotDataMgr::FindBot(entry); bot && bot->IsInWorld() && bot->GetBotAI())
+            const_cast<Creature*>(bot)->GetBotAI()->PauseForTalking(duration);
+#endif
+}
+
 // what players did lately is talked about in General
 bool BotChatter::TalkAboutNews()
 {
@@ -2244,6 +2480,9 @@ void BotChatter::NoteRelation(Player const* player, BotRelationEvent event)
         case BOT_RELATION_HOSTILE_EMOTE:  ++relation.hostile;    delta = -2;          break;
     }
     relation.affinity = std::clamp(relation.affinity + delta, -AFFINITY_LIMIT, AFFINITY_LIMIT);
+
+    // what members do makes the guild's reputation (own lock, never taken the other way round)
+    BotNews::NoteGuildStanding(player, delta);
 
     // forget the one not seen for the longest time
     if (state.relations.size() > MAX_RELATIONSHIPS)

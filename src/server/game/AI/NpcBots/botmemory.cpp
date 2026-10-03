@@ -376,6 +376,14 @@ void BotMemory::Load()
                 deeds.push_back(DeedFromJson(value.as_object()));
     BotNews::ImportDeeds(deeds);
 
+    std::vector<BotNews::GuildRecord> guilds;
+    if (json::value const* values = obj.if_contains("guilds"); values && values->is_array())
+        for (json::value const& value : values->as_array())
+            if (value.is_object())
+                guilds.push_back({ GetNumber<uint32>(value.as_object(), "id"), GetString(value.as_object(), "name"),
+                    GetNumber<int32>(value.as_object(), "standing") });
+    BotNews::ImportGuilds(guilds);
+
     std::vector<BotStoryArcs::ArcRecord> arcs;
     if (json::value const* values = obj.if_contains("arcs"); values && values->is_array())
         for (json::value const& value : values->as_array())
@@ -425,6 +433,12 @@ void BotMemory::Save()
     for (BotDeed const& deed : BotNews::ExportDeeds())
         deeds.push_back(DeedToJson(deed));
     root["deeds"] = std::move(deeds);
+
+    json::array guilds;
+    for (BotNews::GuildRecord const& guild : BotNews::ExportGuilds())
+        guilds.push_back(json::object{ { "id", guild.guildId }, { "name", guild.name },
+            { "standing", guild.standing } });
+    root["guilds"] = std::move(guilds);
 
     json::array arcs;
     for (BotStoryArcs::ArcRecord const& arc : BotStoryArcs::ExportArcs())

@@ -210,6 +210,10 @@ public:
     bool IsGeneratedBot() const;
     static bool IsWanderNodeAvailableForBotFaction(WanderNode const* wp, uint32 factionTemplateId, bool teleport, bool spawn = false);
     WanderNode const* GetClosestWanderNode() const;
+    // the bot travelled on its own (flight path): it goes on from the closest wander node
+    void RestartWanderingHere();
+    // the bot uses its hearthstone to a wander node far away
+    bool HearthstoneTo(WanderNode const* node);
     WanderNode const* GetNextWanderNode(Position const* fromPos, uint8 lvl, bool random) const;
     WanderNode const* GetNextTravelNode(Position const* from, bool random) const;
     WanderNode const* GetNextBGTravelNode() const;

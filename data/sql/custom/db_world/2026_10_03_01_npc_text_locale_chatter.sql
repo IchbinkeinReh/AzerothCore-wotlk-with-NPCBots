@@ -35,4 +35,6 @@ INSERT INTO `npc_text_locale` (`ID`,`Locale`,`Text0_0`,`Text1_0`,`Text2_0`,`Text
 (@CHATTER2_TEXTS_START+27,'deDE','ein Wettrennen',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
 (@CHATTER2_TEXTS_START+28,'deDE','einen Trinkwettbewerb',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
 (@CHATTER2_TEXTS_START+29,'deDE','ein Armdrücken',NULL,NULL,NULL,NULL,NULL,NULL,NULL),
-(@CHATTER2_TEXTS_START+30,'deDE','Hnngh...!','Noch... nicht...!','Du bist stärker, als du aussiehst!',NULL,NULL,NULL,NULL,NULL);
+(@CHATTER2_TEXTS_START+30,'deDE','Hnngh...!','Noch... nicht...!','Du bist stärker, als du aussiehst!',NULL,NULL,NULL,NULL,NULL),
+(@CHATTER2_TEXTS_START+31,'deDE','Ah, jemand von <%guild>! Anständige Leute, hab ich gehört.','<%guild>! Eure Gilde hat einen Ruf. Einen guten.','Grüße an <%guild>! Von euch könnten wir mehr gebrauchen.',NULL,NULL,NULL,NULL,NULL),
+(@CHATTER2_TEXTS_START+32,'deDE','<%guild>? Von euch habe ich genug gehört.','Hmpf. <%guild>. Bleib mir vom Leib.','Ah, <%guild>. Passt auf eure Geldbeutel auf, Leute.',NULL,NULL,NULL,NULL,NULL);

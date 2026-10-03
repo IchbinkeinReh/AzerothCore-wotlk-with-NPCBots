@@ -20,6 +20,10 @@ NpcBot Activities: what a free wandering bot is doing (NpcBot.WanderingBots.Acti
 - companion: travelling with a friend (another bot, see BotChatter bonds) for a while, helping in fights
 - gather:   fishing at a lake or the sea, mining an ore vein or picking herbs nearby (looks only, the node
             stays), the finds are sold in the Trade channel (botworldevents.h)
+- errand:   in towns and cities, a visit to the bank, the mailbox, the auction house, a trainer, a vendor or the
+            inn, talking to the npc for a while
+- travel:   a ride on a flight path (flying the real route) or the hearthstone to a town far away, the bot goes
+            on wandering from there
 
 Free wandering bots choose rest and roleplay on their own. Players can ask any bot (hired ones too) through
 OpenAI to rest or to tell a story.
@@ -39,7 +43,9 @@ enum BotActivityMode : uint8
     BOT_ACTIVITY_STORY,
     BOT_ACTIVITY_EVENT,
     BOT_ACTIVITY_COMPANION,
-    BOT_ACTIVITY_GATHER
+    BOT_ACTIVITY_GATHER,
+    BOT_ACTIVITY_ERRAND,
+    BOT_ACTIVITY_TRAVEL
 };
 
 enum BotGatherKind : uint8
@@ -67,6 +73,8 @@ public:
         return _mode == BOT_ACTIVITY_REST || _mode == BOT_ACTIVITY_ROLEPLAY || _mode == BOT_ACTIVITY_STORY;
     }
     bool IsInEvent() const { return _mode == BOT_ACTIVITY_EVENT; }
+    // flying or casting the hearthstone: the bot AI pauses
+    bool IsTravelling() const { return _mode == BOT_ACTIVITY_TRAVEL && _travelStarted; }
     uint32 GetEventId() const { return IsInEvent() ? _eventId : 0; }
 
     // back to active, stands up
@@ -122,6 +130,14 @@ private:
     bool StartFishing();
     void UpdateGather(uint32 diff);
     void EndGather();
+    bool StartErrand();
+    void UpdateErrand(uint32 diff);
+    bool StartTravel();
+    bool StartFlight(Creature const* flightMaster);
+    bool LaunchFlight();
+    bool StartHearthstone();
+    void UpdateTravel(uint32 diff);
+    void EndTravel();
     void UpdateVanityPet(uint32 diff);
     void DespawnVanityPet();
     uint32 GetLooksSeed() const;
@@ -192,6 +208,18 @@ private:
     uint32 _gatherTimer;
     ObjectGuid _gatherBobber;
     uint32 _gatherOldItem;
+
+    // errand
+    ObjectGuid _errandTarget;
+    bool _errandAtMailbox;
+    uint32 _errandTimer;
+
+    // travel
+    bool _travelStarted;        // flying or casting
+    bool _travelFlying;
+    ObjectGuid _travelMaster;
+    uint32 _travelTimer;
+    uint32 _travelOldFlags;
 
     // vanity pet
     ObjectGuid _vanityPet;

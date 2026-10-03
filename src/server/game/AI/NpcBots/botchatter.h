@@ -178,6 +178,9 @@ public:
     static std::vector<SocialRecord> ExportSocial();
     static void ImportSocial(std::vector<SocialRecord> const& records);
 
+    // a conversation between two bots (OpenAI), its lines are said one after another, world thread
+    static void OnConversation(BotAIResult const& result);
+
     // extra placeholders of a text and their values, e.g. { "%quest", "The Missing Diplomat" }
     using TextVars = std::vector<std::pair<std::string, std::string>>;
 
@@ -259,6 +262,8 @@ private:
     static std::string GetNotableText(Player const* player);
     // bots around a source copy a catchy emote (dance, cheer...) a moment later
     static void SpreadEmote(WorldObject const* source, uint32 textEmote, uint8 depth);
+    // two bots talking with each other while a player listens, written by OpenAI
+    bool StartConversation();
     // a text id in /say a moment later, e.g. answering another bot
     void SayLater(uint32 textId, ObjectGuid subject, uint32 delay);
     bool SayTextNearby(uint32 textId, WorldObject const* subject, TextVars vars = {});

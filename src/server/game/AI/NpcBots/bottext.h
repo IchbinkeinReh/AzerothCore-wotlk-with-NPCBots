@@ -577,7 +577,9 @@ enum BotTexts : uint32
     BOT_TEXT_CONTEST_NAME_DRINKING          = 71229, //"a drinking contest"
     BOT_TEXT_CONTEST_NAME_ARM               = 71230, //"an arm wrestling match"
     BOT_TEXT_CONTEST_ARM_ROUND              = 71231, //say: "Hnngh...!"
-    //71232-71300 reserved for bot chatter texts
+    BOT_TEXT_GUILD_PRAISE                   = 71232, //say: "Ah, someone from <%guild>!"
+    BOT_TEXT_GUILD_SNUB                     = 71233, //say: "<%guild>? I have heard about your lot."
+    //71234-71300 reserved for bot chatter texts
 };
 
 #endif //BOTTEXT_H

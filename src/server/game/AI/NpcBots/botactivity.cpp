@@ -6,13 +6,17 @@
 #include "botdefine.h"
 #include "botmemory.h"
 #include "bottext.h"
+#include "botwanderful.h"
 #include "botworldevents.h"
 #include "CellImpl.h"
 #include "Containers.h"
+#include "DBCStores.h"
 #include "GameObject.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Map.h"
+#include "MoveSpline.h"
+#include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -54,6 +58,15 @@ namespace
     constexpr uint32 GATHER_MAX_TRAVEL_TIME = 40 * IN_MILLISECONDS;
     constexpr uint32 ITEM_FISHING_POLE = 6256;
     constexpr uint32 GO_FISHING_BOBBER = 35591;
+    constexpr float ERRAND_SEARCH_RADIUS = 80.0f;
+    constexpr uint32 ERRAND_MAX_WALK_TIME = 60 * IN_MILLISECONDS;
+    constexpr float TRAVEL_FLIGHT_MASTER_RANGE = 40.0f;
+    constexpr float TRAVEL_FLIGHT_MIN_DISTANCE = 500.0f;
+    constexpr float TRAVEL_FLIGHT_SPEED = 32.0f;
+    constexpr float TRAVEL_HEARTHSTONE_MIN_DISTANCE = 1500.0f;
+    constexpr uint32 TRAVEL_MAX_WALK_TIME = 60 * IN_MILLISECONDS;
+    constexpr uint32 TRAVEL_MAX_FLIGHT_TIME = 20 * MINUTE * IN_MILLISECONDS;
+    constexpr uint32 TRAVEL_HEARTHSTONE_TIME = 15 * IN_MILLISECONDS;
     constexpr uint32 VANITY_PET_CHECK_DELAY = 5 * IN_MILLISECONDS;
     constexpr uint32 VANITY_PET_LIFETIME = 10 * MINUTE * IN_MILLISECONDS;
     constexpr uint32 VANITY_PET_CHANCE = 30;        // % of bots having one
@@ -154,7 +167,8 @@ BotActivity::BotActivity(bot_ai* ai, Creature* bot) : _ai(ai), _me(bot), _mode(B
     _story(0), _storyLine(0), _storiesLeft(0), _storyLength(0), _storyLinesTold(0), _storyWaiting(false),
     _storyEnding(false), _storyTimer(0), _eventId(0), _eventAttack(false), _eventMoveTimer(0),
     _companionMounted(false), _gatherKind(BOT_GATHER_FISHING), _gatherWorking(false), _gatherTimer(0),
-    _gatherOldItem(0), _vanityPetTimer(urand(1000, 5000))
+    _gatherOldItem(0), _errandAtMailbox(false), _errandTimer(0), _travelStarted(false), _travelFlying(false),
+    _travelTimer(0), _travelOldFlags(0), _vanityPetTimer(urand(1000, 5000))
 {
 }
 
@@ -163,14 +177,16 @@ void BotActivity::Update(uint32 diff)
     UpdateVanityPet(diff);
 
     // world events run without the activities config, a hired bot or a teleport ends them
-    if (_mode == BOT_ACTIVITY_EVENT || _mode == BOT_ACTIVITY_COMPANION)
+    if (_mode == BOT_ACTIVITY_EVENT || _mode == BOT_ACTIVITY_COMPANION || _mode == BOT_ACTIVITY_TRAVEL)
     {
-        if (!_me->IsInWorld() || !_ai->IsWanderer() || !_ai->IAmFree() || _ai->IsDuringTeleport())
+        if (!_me->IsInWorld() || !_me->IsAlive() || !_ai->IsWanderer() || !_ai->IAmFree() || _ai->IsDuringTeleport())
             Stop();
         else if (_mode == BOT_ACTIVITY_EVENT)
             UpdateEvent(diff);
-        else
+        else if (_mode == BOT_ACTIVITY_COMPANION)
             UpdateCompanion(diff);
+        else
+            UpdateTravel(diff);
         return;
     }
 
@@ -196,6 +212,8 @@ void BotActivity::Update(uint32 diff)
             UpdateRest(diff);
         else if (_mode == BOT_ACTIVITY_GATHER)
             UpdateGather(diff);
+        else if (_mode == BOT_ACTIVITY_ERRAND)
+            UpdateErrand(diff);
         else if (_mode == BOT_ACTIVITY_STORY)
             UpdateStory(diff);
         else if (_host == _me->GetGUID())
@@ -236,15 +254,32 @@ void BotActivity::ChooseActivity()
         restChance = std::min<uint32>(restChance * 3, 100 - roleplayChance);
 
     uint32 gatherChance = BotCfg::GetBotActivitiesGatherChance();
+    uint32 travelChance = BotCfg::GetBotActivitiesTravelChance();
+    // in capitals errands are what most people do
+    uint32 errandChance = BotCfg::GetBotActivitiesErrandChance();
+    if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(_me->GetZoneId());
+        zone && (zone->flags & AREA_FLAG_CAPITAL))
+        errandChance = std::min<uint32>(errandChance * 3, 80);
+
     if (roll < roleplayChance)
     {
         if (!StartRoleplay())
             StartRest();
+        return;
     }
-    else if (roll < roleplayChance + restChance)
+    roll -= roleplayChance;
+    if (roll < errandChance)
+    {
+        if (StartErrand())
+            return;
+    }
+    roll -= std::min(roll, errandChance);
+    if (roll < restChance)
         StartRest();
-    else if (roll < roleplayChance + restChance + gatherChance)
+    else if (roll < restChance + gatherChance)
         StartGather();
+    else if (roll < restChance + gatherChance + travelChance)
+        StartTravel();
 }
 
 bool BotActivity::CanStartActivity() const
@@ -294,6 +329,10 @@ void BotActivity::Stop()
 
     if (_mode == BOT_ACTIVITY_GATHER)
         EndGather();
+    else if (_mode == BOT_ACTIVITY_TRAVEL)
+        EndTravel();
+    else if (_mode == BOT_ACTIVITY_ERRAND && _errandAtMailbox)
+        _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_ONESHOT_NONE);
     if (IsSeated() || _seated)
         StandUp();
 
@@ -554,6 +593,300 @@ void BotActivity::DespawnVanityPet()
     if (Creature* pet = GetVanityPet())
         pet->DespawnOrUnsummon();
     _vanityPet.Clear();
+}
+
+// npcs and mailboxes people visit in towns
+bool BotActivity::StartErrand()
+{
+    struct ErrandNpcCheck
+    {
+        ErrandNpcCheck(Creature const* bot) : _bot(bot) { }
+
+        bool operator()(Creature* creature) const
+        {
+            return creature->IsAlive() && !creature->IsNPCBot() && creature->IsFriendlyTo(_bot) &&
+                (creature->HasNpcFlag(UNIT_NPC_FLAG_BANKER) || creature->HasNpcFlag(UNIT_NPC_FLAG_AUCTIONEER) ||
+                creature->HasNpcFlag(UNIT_NPC_FLAG_TRAINER) || creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) ||
+                creature->HasNpcFlag(UNIT_NPC_FLAG_INNKEEPER) || creature->HasNpcFlag(UNIT_NPC_FLAG_FLIGHTMASTER)) &&
+                _bot->IsWithinDistInMap(creature, ERRAND_SEARCH_RADIUS);
+        }
+
+    private:
+        Creature const* _bot;
+    };
+
+    std::list<Creature*> npcs;
+    ErrandNpcCheck npcCheck(_me);
+    Acore::CreatureListSearcher<ErrandNpcCheck> npcSearcher(_me, npcs, npcCheck);
+    Cell::VisitObjects(_me, npcSearcher, ERRAND_SEARCH_RADIUS);
+
+    std::list<GameObject*> objects;
+    Acore::AllWorldObjectsInRange goCheck(_me, ERRAND_SEARCH_RADIUS);
+    Acore::GameObjectListSearcher<Acore::AllWorldObjectsInRange> goSearcher(_me, objects, goCheck);
+    Cell::VisitObjects(_me, goSearcher, ERRAND_SEARCH_RADIUS);
+
+    std::vector<WorldObject*> targets(npcs.begin(), npcs.end());
+    for (GameObject* go : objects)
+        if (go->GetGoType() == GAMEOBJECT_TYPE_MAILBOX && go->isSpawned())
+            targets.push_back(go);
+    if (targets.empty())
+        return false;
+
+    WorldObject* target = Acore::Containers::SelectRandomContainerElement(targets);
+    _errandAtMailbox = target->IsGameObject();
+    _errandTarget = target->GetGUID();
+    _errandTimer = 0;
+
+    // in front of the npc, before the mailbox
+    float angle = _errandAtMailbox ? target->GetAbsoluteAngle(_me) : target->GetOrientation();
+    float dist = _errandAtMailbox ? 1.5f : 2.5f;
+    _gatherSpot.Relocate(target->GetPositionX() + dist * std::cos(angle),
+        target->GetPositionY() + dist * std::sin(angle), target->GetPositionZ());
+    _me->UpdateAllowedPositionZ(_gatherSpot.m_positionX, _gatherSpot.m_positionY, _gatherSpot.m_positionZ);
+    _gatherFacing.Relocate(target);
+
+    _mode = BOT_ACTIVITY_ERRAND;
+    _modeTimer = ERRAND_MAX_WALK_TIME;
+    return true;
+}
+
+void BotActivity::UpdateErrand(uint32 diff)
+{
+    if (_modeTimer <= diff)
+    {
+        // a busy town: the next errand comes soon
+        Stop();
+        if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(_me->GetZoneId());
+            zone && (zone->flags & AREA_FLAG_CAPITAL))
+            _decisionTimer = urand(20, 60) * IN_MILLISECONDS;
+        return;
+    }
+    _modeTimer -= diff;
+
+    if (_errandTimer)
+    {
+        if (_errandTimer > diff)
+            _errandTimer -= diff;
+        else
+        {
+            _errandTimer = urand(4, 7) * IN_MILLISECONDS;
+            if (!_errandAtMailbox)
+                _me->HandleEmoteCommand(roll_chance_i(70) ? EMOTE_ONESHOT_TALK : EMOTE_ONESHOT_QUESTION);
+        }
+        return;
+    }
+
+    if (_me->GetExactDist2d(_gatherSpot) > 1.5f)
+    {
+        if (!_me->isMoving())
+        {
+            if (_me->IsMounted())
+                _me->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            _ai->BotMovement(BOT_MOVE_POINT, &_gatherSpot, nullptr, true);
+        }
+        return;
+    }
+    if (_me->isMoving())
+        return;
+
+    // there: business for a while
+    _me->SetFacingTo(_me->GetAbsoluteAngle(&_gatherFacing));
+    _modeTimer = urand(8, 20) * IN_MILLISECONDS;
+    _errandTimer = 1;
+    if (_errandAtMailbox)
+        _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_USE_STANDING);
+}
+
+bool BotActivity::StartTravel()
+{
+    struct FlightMasterCheck
+    {
+        FlightMasterCheck(Creature const* bot) : _bot(bot) { }
+
+        bool operator()(Creature* creature) const
+        {
+            return creature->IsAlive() && creature->HasNpcFlag(UNIT_NPC_FLAG_FLIGHTMASTER) &&
+                creature->IsFriendlyTo(_bot) && _bot->IsWithinDistInMap(creature, TRAVEL_FLIGHT_MASTER_RANGE);
+        }
+
+    private:
+        Creature const* _bot;
+    };
+
+    Creature* flightMaster = nullptr;
+    FlightMasterCheck check(_me);
+    Acore::CreatureSearcher<FlightMasterCheck> searcher(_me, flightMaster, check);
+    Cell::VisitObjects(_me, searcher, TRAVEL_FLIGHT_MASTER_RANGE);
+
+    if (flightMaster && StartFlight(flightMaster))
+        return true;
+    return roll_chance_i(50) && StartHearthstone();
+}
+
+bool BotActivity::StartFlight(Creature const* flightMaster)
+{
+    _mode = BOT_ACTIVITY_TRAVEL;
+    _modeTimer = TRAVEL_MAX_WALK_TIME;
+    _travelStarted = false;
+    _travelFlying = false;
+    _travelMaster = flightMaster->GetGUID();
+
+    float angle = flightMaster->GetOrientation();
+    _gatherSpot.Relocate(flightMaster->GetPositionX() + 2.5f * std::cos(angle),
+        flightMaster->GetPositionY() + 2.5f * std::sin(angle), flightMaster->GetPositionZ());
+    _me->UpdateAllowedPositionZ(_gatherSpot.m_positionX, _gatherSpot.m_positionY, _gatherSpot.m_positionZ);
+    _gatherFacing.Relocate(flightMaster);
+    return true;
+}
+
+// a real flight path from here to another flight master of the faction on this continent
+bool BotActivity::LaunchFlight()
+{
+    TeamId team = BotDataMgr::GetTeamIdForFaction(_me->GetFaction());
+    if (team != TEAM_ALLIANCE && team != TEAM_HORDE)
+        return false;
+
+    uint32 source = sObjectMgr->GetNearestTaxiNode(_me->GetPositionX(), _me->GetPositionY(), _me->GetPositionZ(),
+        _me->GetMapId(), team);
+    auto paths = sTaxiPathSetBySource.find(source);
+    if (!source || paths == sTaxiPathSetBySource.end())
+        return false;
+
+    std::vector<uint32> candidates;
+    for (auto const& [destination, path] : paths->second)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(destination);
+        if (!node || !path || node->map_id != _me->GetMapId() || path->ID >= sTaxiPathNodesByPath.size() ||
+            sTaxiPathNodesByPath[path->ID].empty() || !sObjectMgr->GetTaxiMountDisplayId(destination, team) ||
+            _me->GetExactDist2d(node->x, node->y) < TRAVEL_FLIGHT_MIN_DISTANCE)
+            continue;
+        candidates.push_back(path->ID);
+    }
+    uint32 mountDisplay = sObjectMgr->GetTaxiMountDisplayId(source, team);
+    if (candidates.empty() || !mountDisplay)
+        return false;
+
+    Movement::PointsArray points;
+    points.emplace_back(_me->GetPositionX(), _me->GetPositionY(), _me->GetPositionZ());
+    uint32 pathId = Acore::Containers::SelectRandomContainerElement(candidates);
+    for (TaxiPathNodeEntry const* node : sTaxiPathNodesByPath[pathId])
+    {
+        if (node->mapid != _me->GetMapId())
+            break;
+        points.emplace_back(node->x, node->y, node->z);
+    }
+    if (points.size() < 3)
+        return false;
+
+    // a passenger: nobody attacks it, grids along the route are loaded
+    _me->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    _me->Mount(mountDisplay);
+    _travelOldFlags = _me->GetUInt32Value(UNIT_FIELD_FLAGS);
+    _me->SetUnitFlag(UnitFlags(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC |
+        UNIT_FLAG_IMMUNE_TO_NPC));
+    _me->setActive(true);
+
+    Movement::MoveSplineInit init(_me);
+    init.MovebyPath(points);
+    init.SetFly();
+    init.SetVelocity(TRAVEL_FLIGHT_SPEED);
+    init.Launch();
+
+    _travelStarted = true;
+    _travelFlying = true;
+    _travelTimer = TRAVEL_MAX_FLIGHT_TIME;
+    return true;
+}
+
+// the hearthstone to a town of the bot's faction and level far away
+bool BotActivity::StartHearthstone()
+{
+    uint8 level = _me->GetLevel();
+    uint32 faction = _me->GetFaction();
+    std::vector<WanderNode const*> towns;
+    WanderNode::DoForAllMapWPs(_me->GetMapId(), [this, level, faction, &towns](WanderNode const* node) {
+        if (node->HasFlag(BotWPFlags::BOTWP_FLAG_SPAWN) && !node->HasFlag(BotWPFlags::BOTWP_FLAG_NOT_A_START_POINT) &&
+            level + 2 >= node->GetLevels().first && level <= node->GetLevels().second &&
+            bot_ai::IsWanderNodeAvailableForBotFaction(node, faction, true) &&
+            _me->GetExactDist2d(node) >= TRAVEL_HEARTHSTONE_MIN_DISTANCE)
+            towns.push_back(node);
+    });
+    if (towns.empty() || !_ai->HearthstoneTo(Acore::Containers::SelectRandomContainerElement(towns)))
+        return false;
+
+    _mode = BOT_ACTIVITY_TRAVEL;
+    _modeTimer = TRAVEL_HEARTHSTONE_TIME;
+    _travelStarted = true;
+    _travelFlying = false;
+    return true;
+}
+
+void BotActivity::UpdateTravel(uint32 diff)
+{
+    if (_travelFlying)
+    {
+        if (_me->movespline->Finalized() || _travelTimer <= diff)
+        {
+            // landed: wandering goes on from here
+            bool landed = _me->movespline->Finalized();
+            Stop();
+            if (landed)
+                _ai->RestartWanderingHere();
+            return;
+        }
+        _travelTimer -= diff;
+        return;
+    }
+
+    if (_modeTimer <= diff)
+    {
+        Stop();
+        return;
+    }
+    _modeTimer -= diff;
+
+    // the hearthstone: the spell teleports the bot, an interrupted cast ends the trip
+    if (_travelStarted)
+    {
+        if (!_me->HasUnitState(UNIT_STATE_CASTING))
+            Stop();
+        return;
+    }
+
+    // walking to the flight master
+    _ai->HoldPosition(HOLD_POSITION_TIME);
+    if (_me->GetExactDist2d(_gatherSpot) > 1.5f)
+    {
+        if (!_me->isMoving())
+        {
+            if (_me->IsMounted())
+                _me->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            _ai->BotMovement(BOT_MOVE_POINT, &_gatherSpot, nullptr, true);
+        }
+        return;
+    }
+    if (_me->isMoving())
+        return;
+
+    _me->SetFacingTo(_me->GetAbsoluteAngle(&_gatherFacing));
+    _me->HandleEmoteCommand(EMOTE_ONESHOT_TALK);
+    if (!LaunchFlight())
+        Stop();
+}
+
+void BotActivity::EndTravel()
+{
+    if (_travelFlying)
+    {
+        if (!_me->movespline->Finalized())
+            _me->StopMoving();
+        _me->Dismount();
+        _me->SetUInt32Value(UNIT_FIELD_FLAGS, _travelOldFlags);
+        _me->setActive(false);
+    }
+    _travelStarted = false;
+    _travelFlying = false;
+    _travelMaster.Clear();
 }
 
 bool BotActivity::StartGather()

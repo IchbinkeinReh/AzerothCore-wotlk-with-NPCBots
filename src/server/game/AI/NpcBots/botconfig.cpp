@@ -184,6 +184,12 @@ static bool _commentsEnable;
 static uint32 _commentsCooldown;
 static bool _emoteChainsEnable;
 static bool _vanityPetsEnable;
+static uint32 _activitiesErrandChance;
+static uint32 _activitiesTravelChance;
+static bool _conversationsEnable;
+static uint32 _conversationsChance;
+static uint32 _conversationsCooldown;
+static bool _guildReputationEnable;
 static bool _guildsEnable;
 static bool _openaiEnable;
 static std::string _openaiApiKey;
@@ -572,6 +578,14 @@ private:
         _commentsCooldown               = sConfigMgr->GetIntDefault("NpcBot.Chatter.Comments.Cooldown", 1800);
         _emoteChainsEnable              = sConfigMgr->GetBoolDefault("NpcBot.Chatter.EmoteChains.Enable", true);
         _vanityPetsEnable               = sConfigMgr->GetBoolDefault("NpcBot.WanderingBots.VanityPets.Enable", true);
+        _activitiesErrandChance         = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.ErrandChance", 20);
+        _activitiesTravelChance         = sConfigMgr->GetIntDefault("NpcBot.WanderingBots.Activities.TravelChance", 5);
+        _conversationsEnable            = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Conversations.Enable",
+            true);
+        _conversationsChance            = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.Conversations.Chance", 3);
+        _conversationsCooldown          = sConfigMgr->GetIntDefault("NpcBot.Chatter.OpenAI.Conversations.Cooldown",
+            900);
+        _guildReputationEnable          = sConfigMgr->GetBoolDefault("NpcBot.Chatter.GuildReputation.Enable", true);
         _guildsEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Guilds.Enable", true);
         _guildsChance                   = sConfigMgr->GetIntDefault("NpcBot.Guilds.Chance", 70);
         _openaiEnable                   = sConfigMgr->GetBoolDefault("NpcBot.Chatter.OpenAI.Enable", false);
@@ -1583,6 +1597,30 @@ bool BotCfg::IsBotEmoteChainsEnabled()
 bool BotCfg::IsBotVanityPetsEnabled()
 {
     return _vanityPetsEnable;
+}
+uint32 BotCfg::GetBotActivitiesErrandChance()
+{
+    return _activitiesErrandChance;
+}
+uint32 BotCfg::GetBotActivitiesTravelChance()
+{
+    return _activitiesTravelChance;
+}
+bool BotCfg::IsBotConversationsEnabled()
+{
+    return _conversationsEnable;
+}
+uint32 BotCfg::GetBotConversationsChance()
+{
+    return _conversationsChance;
+}
+uint32 BotCfg::GetBotConversationsCooldown()
+{
+    return _conversationsCooldown;
+}
+bool BotCfg::IsBotGuildReputationEnabled()
+{
+    return _guildReputationEnable;
 }
 std::string const& BotCfg::GetBotChatterLocale()
 {

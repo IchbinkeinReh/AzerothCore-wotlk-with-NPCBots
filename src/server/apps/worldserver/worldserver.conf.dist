@@ -5576,6 +5576,19 @@ NpcBot.WanderingBots.Activities.RoleplayChance = 10
 NpcBot.WanderingBots.Activities.GatherChance = 10
 
 #
+#    NpcBot.WanderingBots.Activities.ErrandChance
+#    NpcBot.WanderingBots.Activities.TravelChance
+#        Description: Chances (%) per decision of an active wandering bot to run an errand (visit a banker,
+#                     mailbox, auctioneer, trainer, vendor or innkeeper nearby for a while, three times as
+#                     likely in capitals, where the next errand follows soon) and to travel like a player (fly
+#                     a flight path from a flight master nearby, or use the hearthstone to a town far away).
+#        Default:     20 - (NpcBot.WanderingBots.Activities.ErrandChance)
+#                     5  - (NpcBot.WanderingBots.Activities.TravelChance)
+
+NpcBot.WanderingBots.Activities.ErrandChance = 20
+NpcBot.WanderingBots.Activities.TravelChance = 5
+
+#
 #    NpcBot.WanderingBots.VanityPets.Enable
 #        Description: Some free wandering bots (about 30%, always the same ones) have a vanity pet following
 #                     them and some ride a rare mount (Swift Zulian Tiger, Raven Lord, mammoths...). They show
@@ -5804,6 +5817,33 @@ NpcBot.Chatter.Comments.Cooldown = 1800
 #                     0 - (Disabled)
 
 NpcBot.Chatter.EmoteChains.Enable = 1
+
+#
+#    NpcBot.Chatter.OpenAI.Conversations.Enable
+#    NpcBot.Chatter.OpenAI.Conversations.Chance
+#    NpcBot.Chatter.OpenAI.Conversations.Cooldown
+#        Description: Two free bots standing together talk with each other while a player is close enough to
+#                     hear: OpenAI writes 4-6 lines (one request) about the weather, the place, news, rumors, a
+#                     villain or each other, fitting their moods and relationship. Chance (%) per idle chatter
+#                     of a bot, Cooldown in seconds per listening player. Needs NpcBot.Chatter.OpenAI.Enable.
+#        Default:     1   - (NpcBot.Chatter.OpenAI.Conversations.Enable)
+#                     3   - (NpcBot.Chatter.OpenAI.Conversations.Chance)
+#                     900 - (NpcBot.Chatter.OpenAI.Conversations.Cooldown)
+
+NpcBot.Chatter.OpenAI.Conversations.Enable   = 1
+NpcBot.Chatter.OpenAI.Conversations.Chance   = 3
+NpcBot.Chatter.OpenAI.Conversations.Cooldown = 900
+
+#
+#    NpcBot.Chatter.GuildReputation.Enable
+#        Description: Bots form opinions about player guilds from the deeds and the behavior of their members
+#                     (relationships). Bots who don't know a player greet members of well-known guilds warmly
+#                     and snub members of guilds with a bad name, OpenAI knows the reputation. Kept in the bot
+#                     memory file.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+NpcBot.Chatter.GuildReputation.Enable = 1
 
 #
 #    NpcBot.Guilds.Enable

@@ -68,6 +68,20 @@ public:
     // a true rumor: a rare creature alive near the bot ("They say ... near ..."), empty if none, map thread
     static std::string GetRareRumor(Creature const* bot);
 
+    // what bots think of a player guild: deeds and relationships of its members, world and map threads
+    static void NoteGuildStanding(Player const* player, int32 delta);
+    static int32 GetGuildStanding(uint32 guildId);
+    static std::string GetGuildContext(Player const* player);
+
+    struct GuildRecord
+    {
+        uint32 guildId = 0;
+        std::string name;
+        int32 standing = 0;
+    };
+    static std::vector<GuildRecord> ExportGuilds();
+    static void ImportGuilds(std::vector<GuildRecord> const& guilds);
+
     // bot memory
     static std::vector<BotDeed> ExportDeeds();
     static void ImportDeeds(std::vector<BotDeed> const& deeds);

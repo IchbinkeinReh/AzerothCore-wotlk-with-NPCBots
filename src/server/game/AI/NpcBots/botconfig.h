@@ -150,6 +150,12 @@ public:
     static uint32 GetBotCommentsCooldown();
     static bool IsBotEmoteChainsEnabled();
     static bool IsBotVanityPetsEnabled();
+    static uint32 GetBotActivitiesErrandChance();
+    static uint32 GetBotActivitiesTravelChance();
+    static bool IsBotConversationsEnabled();
+    static uint32 GetBotConversationsChance();
+    static uint32 GetBotConversationsCooldown();
+    static bool IsBotGuildReputationEnabled();
     static bool IsBotGuildsEnabled();
     static std::string const& GetBotChatterLocale();
     static bool IsBotOpenAIEnabled();
