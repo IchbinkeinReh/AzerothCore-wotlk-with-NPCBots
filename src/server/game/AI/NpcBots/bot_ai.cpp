@@ -3640,6 +3640,13 @@ bool bot_ai::CanBotAttack(Unit const* target, int8 byspell, bool secondary) cons
     if (IsPointedNoDPSTarget(target))
         return false;
 
+    // towns, capitals and sanctuaries are peaceful: wandering bots start no fight with players or other bots
+    // there (and nobody starts one with them), defending themselves is fine
+    if ((target->IsPlayer() || target->IsNPCBotOrPet() || target->IsControlledByPlayer()) &&
+        target->GetVictim() != me && (IAmFree() || IsFreeBot(target)) &&
+        (IsInPeacefulArea(me) || IsInPeacefulArea(target)))
+        return false;
+
     if (IsWanderer() && target->IsCreature() && target->GetVictim() != me)
     {
         if (BotCfg::EnableWanderingUntargetNpcQuestgiver() && target->IsQuestGiver())
@@ -3734,6 +3741,29 @@ bool bot_ai::CanBotAttack(Unit const* target, int8 byspell, bool secondary) cons
 
     return false;
 }
+/*static*/ bool bot_ai::IsInPeacefulArea(WorldObject const* obj)
+{
+    static constexpr uint32 PEACEFUL_AREA_FLAGS = AREA_FLAG_SANCTUARY | AREA_FLAG_CAPITAL | AREA_FLAG_SLAVE_CAPITAL |
+        AREA_FLAG_TOWN;
+
+    for (uint32 areaId : { obj->GetAreaId(), obj->GetZoneId() })
+        if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(areaId);
+            area && (area->flags & PEACEFUL_AREA_FLAGS))
+            return true;
+    return false;
+}
+
+// a free bot or the pet of one
+/*static*/ bool bot_ai::IsFreeBot(Unit const* unit)
+{
+    Creature const* creature = unit->ToCreature();
+    if (!creature)
+        return false;
+    if (creature->IsNPCBotPet())
+        creature = creature->GetCreator() ? creature->GetCreator()->ToCreature() : nullptr;
+    return creature && creature->IsNPCBot() && creature->GetBotAI() && creature->GetBotAI()->IAmFree();
+}
+
 bool bot_ai::CanBotAttackOnVehicle() const
 {
     if (VehicleSeatEntry const* seat = me->GetVehicle() ? me->GetVehicle()->GetSeatForPassenger(me) : nullptr)

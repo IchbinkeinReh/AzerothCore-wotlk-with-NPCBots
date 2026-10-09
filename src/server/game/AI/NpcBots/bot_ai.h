@@ -210,6 +210,9 @@ public:
     bool IsGeneratedBot() const;
     static bool IsWanderNodeAvailableForBotFaction(WanderNode const* wp, uint32 factionTemplateId, bool teleport, bool spawn = false);
     WanderNode const* GetClosestWanderNode() const;
+    // towns, capitals and sanctuaries: no fights between bots and players
+    static bool IsInPeacefulArea(WorldObject const* obj);
+    static bool IsFreeBot(Unit const* unit);
     // the bot travelled on its own (flight path): it goes on from the closest wander node
     void RestartWanderingHere();
     // the bot uses its hearthstone to a wander node far away
