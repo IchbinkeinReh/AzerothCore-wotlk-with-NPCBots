@@ -1729,6 +1729,11 @@ void Player::UpdateVisibilityOf(T* target, UpdateData& data,
         {
             BeforeVisibilityDestroy<T>(target, this);
 
+            //npcbot: client drops its target on destroy without sending CMSG_SET_SELECTION
+            if (GetTarget() == target->GetGUID())
+                SetSelection(ObjectGuid::Empty);
+            //end npcbot
+
             target->BuildOutOfRangeUpdateBlock(&data);
             GetObjectVisibilityContainer().UnlinkWorldObjectVisibility(target);
         }
@@ -1762,6 +1767,11 @@ void Player::UpdateVisibilityOf(WorldObject* target)
         {
             if (target->IsCreature())
                 BeforeVisibilityDestroy<Creature>(target->ToCreature(), this);
+
+            //npcbot: client drops its target on destroy without sending CMSG_SET_SELECTION
+            if (GetTarget() == target->GetGUID())
+                SetSelection(ObjectGuid::Empty);
+            //end npcbot
 
             target->DestroyForPlayer(this);
             GetObjectVisibilityContainer().UnlinkWorldObjectVisibility(target);
