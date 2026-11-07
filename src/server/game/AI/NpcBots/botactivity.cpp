@@ -58,6 +58,7 @@ namespace
     constexpr uint32 GATHER_MAX_TRAVEL_TIME = 40 * IN_MILLISECONDS;
     constexpr uint32 ITEM_FISHING_POLE = 6256;
     constexpr uint32 GO_FISHING_BOBBER = 35591;
+    constexpr uint32 SPELL_FISHING = 7620;
     constexpr float ERRAND_SEARCH_RADIUS = 80.0f;
     constexpr uint32 ERRAND_MAX_WALK_TIME = 60 * IN_MILLISECONDS;
     constexpr float TRAVEL_FLIGHT_MASTER_RANGE = 40.0f;
@@ -1014,7 +1015,12 @@ void BotActivity::UpdateGather(uint32 diff)
                 if (GameObject* bobber = _me->SummonGameObject(GO_FISHING_BOBBER, _gatherFacing.GetPositionX(),
                     _gatherFacing.GetPositionY(), _gatherFacing.GetPositionZ(), _me->GetOrientation(), 0.0f, 0.0f,
                     0.0f, 0.0f, _modeTimer / IN_MILLISECONDS + 5))
+                {
+                    // the client draws the line from the channeler to its bobber, as for a real Fishing cast
                     _gatherBobber = bobber->GetGUID();
+                    _me->SetGuidValue(UNIT_FIELD_CHANNEL_OBJECT, _gatherBobber);
+                    _me->SetUInt32Value(UNIT_CHANNEL_SPELL, SPELL_FISHING);
+                }
                 _gatherTimer = urand(15, 40) * IN_MILLISECONDS;
                 break;
             }
@@ -1057,7 +1063,14 @@ void BotActivity::EndGather()
     if (_gatherWorking)
         _me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_ONESHOT_NONE);
     if (_gatherKind == BOT_GATHER_FISHING && _gatherWorking)
+    {
         _me->SetUInt32Value(UNIT_VIRTUAL_ITEM_SLOT_ID, _gatherOldItem);
+        if (_me->GetGuidValue(UNIT_FIELD_CHANNEL_OBJECT) == _gatherBobber)
+        {
+            _me->SetGuidValue(UNIT_FIELD_CHANNEL_OBJECT, ObjectGuid::Empty);
+            _me->SetUInt32Value(UNIT_CHANNEL_SPELL, 0);
+        }
+    }
     if (!_gatherBobber.IsEmpty())
         if (GameObject* bobber = ObjectAccessor::GetGameObject(*_me, _gatherBobber))
             bobber->Delete();
