@@ -384,11 +384,11 @@ void MapMgr::Update(uint32 diff)
             }
 
             if (unloaded)
-                LOG_INFO("mmaps", "Unloaded the nav mesh of {} idle grids, {} grids keep theirs", unloaded, loaded);
+                LOG_DEBUG("mmaps", "Unloaded the nav mesh of {} idle grids, {} grids keep theirs", unloaded, loaded);
 
             // every 10 minutes: where the kept nav mesh is and what keeps it
             static uint32 idleGridNavMeshReportCounter = 0;
-            if (!(idleGridNavMeshReportCounter++ % 10))
+            if (!(idleGridNavMeshReportCounter++ % 10) && sLog->ShouldLog("mmaps", LogLevel::LOG_LEVEL_DEBUG))
             {
                 for (auto const& [mapId, map] : i_maps)
                 {
@@ -399,7 +399,7 @@ void MapMgr::Update(uint32 diff)
                     ActiveObjectCountWorker worker;
                     TypeContainerVisitor<ActiveObjectCountWorker, MapStoredObjectTypesContainer> visitor(worker);
                     visitor.Visit(map->GetObjectsStore());
-                    LOG_INFO("mmaps", "Map {}: {} nav mesh tiles, {} creatures, {} updating, active: {}", mapId, tiles,
+                    LOG_DEBUG("mmaps", "Map {}: {} nav mesh tiles, {} creatures, {} updating, active: {}", mapId, tiles,
                         map->GetObjectsStore().Size<Creature>(), map->GetUpdatableObjectsCount(), worker.ToString());
                 }
             }
