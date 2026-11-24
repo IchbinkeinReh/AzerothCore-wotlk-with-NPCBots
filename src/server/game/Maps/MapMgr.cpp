@@ -43,9 +43,66 @@
 #include "botmemory.h"
 #include "botopenai.h"
 #include "GameTime.h"
+#include "StringFormat.h"
+#include "TypeContainerVisitor.h"
+#include <algorithm>
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif
+//end npcbot
+
+//npcbot
+// what keeps grids in use: active objects by kind, the most common entries of the other creatures
+struct ActiveObjectCountWorker
+{
+    void Visit(std::unordered_map<ObjectGuid, Creature*>& creatureMap)
+    {
+        for (auto const& [guid, creature] : creatureMap)
+        {
+            if (!creature->IsInWorld() || !creature->isActiveObject())
+                continue;
+
+            if (creature->IsWandererBot())
+                ++wanderers;
+            else if (creature->IsNPCBotOrPet())
+                ++bots;
+            else
+                ++creatureEntries[creature->GetEntry()];
+        }
+    }
+
+    void Visit(std::unordered_map<ObjectGuid, GameObject*>& gameObjectMap)
+    {
+        for (auto const& [guid, go] : gameObjectMap)
+            if (go->IsInWorld() && go->isActiveObject())
+                ++gameObjects;
+    }
+
+    template<class T>
+    void Visit(std::unordered_map<ObjectGuid, T*>&) { }
+
+    std::string ToString() const
+    {
+        std::vector<std::pair<uint32, uint32>> topEntries(creatureEntries.begin(), creatureEntries.end());
+        std::ranges::sort(topEntries, [](auto const& a, auto const& b) { return a.second > b.second; });
+        uint32 creatures = 0;
+        std::string top;
+        for (auto const& [entry, count] : topEntries)
+        {
+            creatures += count;
+            if (top.size() < 120)
+                top += Acore::StringFormat(" {}x{}", entry, count);
+        }
+
+        return Acore::StringFormat("{} wandering bots, {} other bots, {} creatures, {} gameobjects, top creatures:{}",
+            wanderers, bots, creatures, gameObjects, top);
+    }
+
+    uint32 wanderers = 0;
+    uint32 bots = 0;
+    uint32 gameObjects = 0;
+    std::unordered_map<uint32, uint32> creatureEntries;
+};
 //end npcbot
 
 MapMgr::MapMgr()
@@ -328,6 +385,24 @@ void MapMgr::Update(uint32 diff)
 
             if (unloaded)
                 LOG_INFO("mmaps", "Unloaded the nav mesh of {} idle grids, {} grids keep theirs", unloaded, loaded);
+
+            // every 10 minutes: where the kept nav mesh is and what keeps it
+            static uint32 idleGridNavMeshReportCounter = 0;
+            if (!(idleGridNavMeshReportCounter++ % 10))
+            {
+                for (auto const& [mapId, map] : i_maps)
+                {
+                    std::size_t const tiles = map->GetMapCollisionData().GetLoadedMMapTiles().size();
+                    if (!tiles || map->Instanceable())
+                        continue;
+
+                    ActiveObjectCountWorker worker;
+                    TypeContainerVisitor<ActiveObjectCountWorker, MapStoredObjectTypesContainer> visitor(worker);
+                    visitor.Visit(map->GetObjectsStore());
+                    LOG_INFO("mmaps", "Map {}: {} nav mesh tiles, {} creatures, {} updating, active: {}", mapId, tiles,
+                        map->GetObjectsStore().Size<Creature>(), map->GetUpdatableObjectsCount(), worker.ToString());
+                }
+            }
 
 #if defined(__GLIBC__)
             // freed tiles and despawned bots leave free pages inside the heap, hand them back to the system
