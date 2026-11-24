@@ -947,8 +947,15 @@ void Map::CreatureRelocation(Creature* creature, float x, float y, float z, floa
 
     if (cellChanged)
     {
+        //npcbot: only active creatures load grids, as in AddToMap(), patrols would load the whole map one grid at a time
         if (old_cell.DiffGrid(new_cell))
-            EnsureGridLoaded(new_cell);
+        {
+            if (creature->isActiveObject())
+                EnsureGridLoaded(new_cell);
+            else
+                EnsureGridCreated(GridCoord(new_cell.GridX(), new_cell.GridY()));
+        }
+        //end npcbot
 
         AddCreatureToMoveList(creature);
     }
@@ -1104,8 +1111,15 @@ void Map::MoveAllCreaturesInMoveList()
         }
 
         c->RemoveFromGrid();
+        //npcbot: see CreatureRelocation()
         if (old_cell.DiffGrid(new_cell))
-            EnsureGridLoaded(new_cell);
+        {
+            if (c->isActiveObject())
+                EnsureGridLoaded(new_cell);
+            else
+                EnsureGridCreated(GridCoord(new_cell.GridX(), new_cell.GridY()));
+        }
+        //end npcbot
         AddToGrid(c, new_cell);
     }
     _creaturesToMove.clear();
