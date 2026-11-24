@@ -519,6 +519,10 @@ enum ServerConfigs
 
     CONFIG_CAIS_ENABLED,
 
+    //npcbot
+    CONFIG_IDLE_GRID_NAVMESH_UNLOAD_DELAY,
+    //end npcbot
+
     MAX_NUM_SERVER_CONFIGS
 };
 

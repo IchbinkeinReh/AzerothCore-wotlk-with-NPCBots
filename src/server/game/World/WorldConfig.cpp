@@ -652,6 +652,11 @@ void WorldConfig::BuildConfigCache()
     // Preload all grids of all non-instanced maps
     SetConfigValue<bool>(CONFIG_PRELOAD_ALL_NON_INSTANCED_MAP_GRIDS, "PreloadAllNonInstancedMapGrids", false);
 
+    //npcbot
+    // Free the nav mesh tiles of idle grids on non-instanced maps
+    SetConfigValue<uint32>(CONFIG_IDLE_GRID_NAVMESH_UNLOAD_DELAY, "IdleGridNavMeshUnloadDelay", 300);
+    //end npcbot
+
     // ICC buff override
     SetConfigValue<uint32>(CONFIG_ICC_BUFF_HORDE, "ICC.Buff.Horde", 73822);
     SetConfigValue<uint32>(CONFIG_ICC_BUFF_ALLIANCE, "ICC.Buff.Alliance", 73828);

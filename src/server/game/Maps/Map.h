@@ -39,6 +39,9 @@
 #include "SpawnData.h"
 #include "Timer.h"
 #include "GridTerrainData.h"
+//npcbot
+#include <array>
+//end npcbot
 #include <bitset>
 #include <list>
 #include <memory>
@@ -194,6 +197,10 @@ public:
     template<class T> void RemoveFromMap(T*, bool);
 
     void MarkNearbyCellsOf(WorldObject* obj);
+    //npcbot
+    void MarkNearbyGridNavMeshesUsed(WorldObject const* obj);
+    uint32 UnloadIdleGridNavMeshes(time_t now, time_t idleTime);
+    //end npcbot
 
     virtual void Update(const uint32, const uint32, bool thread = true);
 
@@ -619,6 +626,13 @@ protected:
     TransportsContainer::iterator _transportsUpdateIter;
 
 private:
+    //npcbot
+    void MarkGridNavMeshesUsed(uint32 gridX, uint32 gridY);
+    // last time a player or an active object was in or next to a grid, null if this map keeps its nav mesh tiles
+    std::unique_ptr<std::array<time_t, MAX_NUMBER_OF_GRIDS * MAX_NUMBER_OF_GRIDS>> _gridNavMeshLastUsed;
+    std::bitset<MAX_NUMBER_OF_GRIDS * MAX_NUMBER_OF_GRIDS> _gridNavMeshUnloaded;
+    //end npcbot
+
     Player* _GetScriptPlayerSourceOrTarget(Object* source, Object* target, ScriptInfo const* scriptInfo) const;
     Creature* _GetScriptCreatureSourceOrTarget(Object* source, Object* target, ScriptInfo const* scriptInfo, bool bReverse = false) const;
     Unit* _GetScriptUnit(Object* obj, bool isSource, ScriptInfo const* scriptInfo) const;

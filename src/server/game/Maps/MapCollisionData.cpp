@@ -65,8 +65,29 @@ int MapCollisionData::LoadMMapTile(uint32 tileX, uint32 tileY)
     if (!DisableMgr::IsPathfindingEnabled(&_map) || !_mmapData._navMesh)
         return MMAP::MMAP_LOAD_RESULT_IGNORED;
 
-    return MMAP::MMapMgr::LoadTile(_mmapData._navMesh.get(), _map.GetId(), tileX, tileY);
+    //npcbot
+    dtTileRef tileRef = 0;
+    if (!MMAP::MMapMgr::LoadTile(_mmapData._navMesh.get(), _map.GetId(), tileX, tileY, &tileRef))
+        return MMAP::MMAP_LOAD_RESULT_ERROR;
+
+    _loadedMMapTiles[(tileX << 16) | tileY] = tileRef;
+    return MMAP::MMAP_LOAD_RESULT_OK;
+    //end npcbot
 }
+
+//npcbot
+// frees the tile data, path queries there find no polygons until the tile is loaded again
+bool MapCollisionData::UnloadMMapTile(uint32 tileX, uint32 tileY)
+{
+    auto itr = _loadedMMapTiles.find((tileX << 16) | tileY);
+    if (itr == _loadedMMapTiles.end())
+        return false;
+
+    dtTileRef const tileRef = itr->second;
+    _loadedMMapTiles.erase(itr);
+    return _mmapData._navMesh && dtStatusSucceed(_mmapData._navMesh->removeTile(tileRef, nullptr, nullptr));
+}
+//end npcbot
 
 bool StaticVMapCollisionData::isInLineOfSight(float x1, float y1, float z1, float x2, float y2, float z2, VMAP::ModelIgnoreFlags ignoreFlags) const
 {

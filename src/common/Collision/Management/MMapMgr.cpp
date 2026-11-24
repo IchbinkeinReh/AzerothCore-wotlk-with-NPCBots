@@ -65,7 +65,9 @@ namespace MMAP
         return uint32(x << 16 | y);
     }
 
-    bool MMapMgr::LoadTile(dtNavMesh* navMesh, uint32 mapId, int32 x, int32 y)
+    //npcbot
+    bool MMapMgr::LoadTile(dtNavMesh* navMesh, uint32 mapId, int32 x, int32 y, dtTileRef* tileRef /*= nullptr*/)
+    //end npcbot
     {
         // load this tile :: mmaps/MMMXXYY.mmtile
         std::string fileName = Acore::StringFormat(TILE_FILE_NAME_FORMAT, sConfigMgr->GetOption<std::string>("DataDir", "."), mapId, x, y);
@@ -106,11 +108,15 @@ namespace MMAP
 
         fclose(file);
 
-        dtTileRef tileRef = 0;
+        //npcbot
+        dtTileRef loadedTileRef = 0;
 
         // memory allocated for data is now managed by detour, and will be deallocated when the tile is removed
-        if (dtStatusSucceed(navMesh->addTile(data, fileHeader.size, DT_TILE_FREE_DATA, 0, &tileRef)))
+        if (dtStatusSucceed(navMesh->addTile(data, fileHeader.size, DT_TILE_FREE_DATA, 0, &loadedTileRef)))
         {
+            if (tileRef)
+                *tileRef = loadedTileRef;
+        //end npcbot
             dtMeshHeader* header = (dtMeshHeader*)data;
             LOG_DEBUG("maps", "MMAP:loadMap: Loaded mmtile {:03}[{:02},{:02}] into {:03}[{:02},{:02}]", mapId, x, y, mapId, header->x, header->y);
             return true;

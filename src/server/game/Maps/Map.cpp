@@ -87,6 +87,12 @@ Map::Map(uint32 id, uint32 InstanceId, uint8 SpawnMode, Map* _parent) :
     _corpseUpdateTimer.SetInterval(20 * MINUTE * IN_MILLISECONDS);
 
     _poolData = sPoolMgr->InitPoolsForMap(this);
+
+    //npcbot
+    // continents and other non-instanced maps load grids as they are explored and keep them
+    if (!Instanceable() && sWorld->getIntConfig(CONFIG_IDLE_GRID_NAVMESH_UNLOAD_DELAY))
+        _gridNavMeshLastUsed = std::make_unique<std::array<time_t, MAX_NUMBER_OF_GRIDS * MAX_NUMBER_OF_GRIDS>>();
+    //end npcbot
 }
 
 // Hook called after map is created AND after added to map list
@@ -192,6 +198,11 @@ void Map::EnsureGridCreated(GridCoord const& gridCoord)
 bool Map::EnsureGridLoaded(Cell const& cell)
 {
     EnsureGridCreated(GridCoord(cell.GridX(), cell.GridY()));
+
+    //npcbot
+    if (_gridNavMeshLastUsed)
+        MarkGridNavMeshesUsed(cell.GridX(), cell.GridY());
+    //end npcbot
 
     if (_mapGridManager.LoadGrid(cell.GridX(), cell.GridY()))
     {
@@ -423,6 +434,67 @@ void Map::MarkNearbyCellsOf(WorldObject* obj)
     }
 }
 
+//npcbot
+void Map::MarkNearbyGridNavMeshesUsed(WorldObject const* obj)
+{
+    if (!_gridNavMeshLastUsed || !obj->IsPositionValid())
+        return;
+
+    GridCoord const gridCoord = Acore::ComputeGridCoord(obj->GetPositionX(), obj->GetPositionY());
+    MarkGridNavMeshesUsed(gridCoord.x_coord, gridCoord.y_coord);
+}
+
+// the grid and its neighbours, paths and creatures in sight reach into them
+void Map::MarkGridNavMeshesUsed(uint32 gridX, uint32 gridY)
+{
+    time_t const now = GameTime::GetGameTime().count();
+    for (uint32 x = gridX ? gridX - 1 : 0; x <= std::min<uint32>(gridX + 1, MAX_NUMBER_OF_GRIDS - 1); ++x)
+    {
+        for (uint32 y = gridY ? gridY - 1 : 0; y <= std::min<uint32>(gridY + 1, MAX_NUMBER_OF_GRIDS - 1); ++y)
+        {
+            uint32 const gridId = x * MAX_NUMBER_OF_GRIDS + y;
+            (*_gridNavMeshLastUsed)[gridId] = now;
+            if (_gridNavMeshUnloaded.test(gridId))
+            {
+                _gridNavMeshUnloaded.reset(gridId);
+                _mapCollisionData.LoadMMapTile(x, y);
+            }
+        }
+    }
+}
+
+// called while no map is updating, see MapMgr::Update()
+uint32 Map::UnloadIdleGridNavMeshes(time_t now, time_t idleTime)
+{
+    if (!_gridNavMeshLastUsed)
+        return 0;
+
+    std::vector<uint32> idleGrids;
+    for (auto const& [tileId, tileRef] : _mapCollisionData.GetLoadedMMapTiles())
+    {
+        uint32 const gridId = (tileId >> 16) * MAX_NUMBER_OF_GRIDS + (tileId & 0xFFFF);
+        time_t& lastUsed = (*_gridNavMeshLastUsed)[gridId];
+        // created for a terrain query only, nobody was around yet
+        if (!lastUsed)
+            lastUsed = now;
+        else if (lastUsed + idleTime <= now)
+            idleGrids.push_back(gridId);
+    }
+
+    uint32 unloaded = 0;
+    for (uint32 gridId : idleGrids)
+    {
+        if (_mapCollisionData.UnloadMMapTile(gridId / MAX_NUMBER_OF_GRIDS, gridId % MAX_NUMBER_OF_GRIDS))
+        {
+            _gridNavMeshUnloaded.set(gridId);
+            ++unloaded;
+        }
+    }
+
+    return unloaded;
+}
+//end npcbot
+
 void Map::UpdatePlayerZoneStats(uint32 oldZone, uint32 newZone)
 {
     // Nothing to do if no change
@@ -498,6 +570,9 @@ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
         if (_updatableObjectListRecheckTimer.Passed())
         {
             MarkNearbyCellsOf(player);
+            //npcbot
+            MarkNearbyGridNavMeshesUsed(player);
+            //end npcbot
 
             // If player is using far sight, update viewpoint
             if (WorldObject* viewPoint = player->GetViewpoint())
@@ -562,6 +637,11 @@ void Map::UpdateNonPlayerObjects(uint32 const diff)
             }
 
             obj->Update(diff);
+
+            //npcbot
+            if (_gridNavMeshLastUsed && obj->IsInWorld() && obj->isActiveObject())
+                MarkNearbyGridNavMeshesUsed(obj);
+            //end npcbot
 
             if (!obj->IsUpdateNeeded())
             {

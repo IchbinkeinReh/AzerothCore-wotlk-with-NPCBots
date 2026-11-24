@@ -1414,6 +1414,17 @@ CheckGameObjectLoS = 1
 PreloadAllNonInstancedMapGrids = 0
 
 #
+#    IdleGridNavMeshUnloadDelay
+#        Description: Free the pathfinding data (mmaps) of grids on non-instanced maps that had no
+#                     player and no active object (wandering bots, ...) in or next to them for this
+#                     many seconds. It is loaded again as soon as one comes near. Grids themselves
+#                     stay loaded, this only lowers the memory the explored world takes.
+#        Default:     300 - (5 minutes)
+#                     0   - (Disabled, keep the pathfinding data of all loaded grids)
+
+IdleGridNavMeshUnloadDelay = 300
+
+#
 #     DontCacheRandomMovementPaths
 #        Description: Random movement paths (calculated using MoveMaps) can be cached to save cpu time,
 #                     but this may use up considerable amount of memory and can be prevented by setting this option to 1.

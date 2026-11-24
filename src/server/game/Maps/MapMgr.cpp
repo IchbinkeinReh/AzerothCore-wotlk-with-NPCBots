@@ -42,6 +42,10 @@
 #include "botmgr.h"
 #include "botmemory.h"
 #include "botopenai.h"
+#include "GameTime.h"
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 //end npcbot
 
 MapMgr::MapMgr()
@@ -303,6 +307,37 @@ void MapMgr::Update(uint32 diff)
 
     //npcbot
     BotMgr::HandleDelayedTeleports();
+
+    // no map is updating now, free the nav mesh of grids nobody was near for a while
+    if (uint32 const idleTime = sWorld->getIntConfig(CONFIG_IDLE_GRID_NAVMESH_UNLOAD_DELAY))
+    {
+        static uint32 const IDLE_GRID_NAVMESH_CHECK_DELAY = 60 * IN_MILLISECONDS;
+        static uint32 idleGridNavMeshCheckTimer = IDLE_GRID_NAVMESH_CHECK_DELAY;
+        if (idleGridNavMeshCheckTimer <= diff)
+        {
+            idleGridNavMeshCheckTimer = IDLE_GRID_NAVMESH_CHECK_DELAY;
+
+            time_t const now = GameTime::GetGameTime().count();
+            uint32 unloaded = 0;
+            std::size_t loaded = 0;
+            for (auto const& [mapId, map] : i_maps)
+            {
+                unloaded += map->UnloadIdleGridNavMeshes(now, idleTime);
+                loaded += map->GetMapCollisionData().GetLoadedMMapTiles().size();
+            }
+
+            if (unloaded)
+                LOG_INFO("mmaps", "Unloaded the nav mesh of {} idle grids, {} grids keep theirs", unloaded, loaded);
+
+#if defined(__GLIBC__)
+            // freed tiles and despawned bots leave free pages inside the heap, hand them back to the system
+            if (unloaded || !sWorldSessionMgr->GetPlayerCount())
+                malloc_trim(0);
+#endif
+        }
+        else
+            idleGridNavMeshCheckTimer -= diff;
+    }
     //end npcbot
 
     if (mapUpdateStep < 3)

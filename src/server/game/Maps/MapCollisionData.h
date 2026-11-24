@@ -22,6 +22,9 @@
 #include "MapTree.h"
 #include "MMapMgr.h"
 #include "IVMapMgr.h"
+//npcbot
+#include <unordered_map>
+//end npcbot
 
 class Map;
 
@@ -78,6 +81,11 @@ public:
 
     int LoadVMapTile(uint32 tileX, uint32 tileY);
     int LoadMMapTile(uint32 tileX, uint32 tileY);
+    //npcbot
+    bool UnloadMMapTile(uint32 tileX, uint32 tileY);
+    // tiles this (base) map loaded into its nav mesh, key is (tileX << 16) | tileY
+    std::unordered_map<uint32, dtTileRef> const& GetLoadedMMapTiles() const { return _loadedMMapTiles; }
+    //end npcbot
 
     DynamicVMapCollisionData& GetDynamicTree() { return _dynamicVMapData; }
     DynamicVMapCollisionData const& GetDynamicTree() const { return _dynamicVMapData; }
@@ -95,6 +103,9 @@ private:
     DynamicVMapCollisionData _dynamicVMapData;
     StaticVMapCollisionData _staticVMapData;
     MMapData _mmapData;
+    //npcbot
+    std::unordered_map<uint32, dtTileRef> _loadedMMapTiles;
+    //end npcbot
 };
 
 #endif
