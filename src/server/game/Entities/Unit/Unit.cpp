@@ -13602,6 +13602,13 @@ void Unit::RestoreDisplayId()
     }
 
     // no auras found - set modelid to default
+    //npcbot: keep the model scale of the bot, see BotDataMgr's random looks
+    if (IsNPCBot())
+    {
+        SetDisplayId(GetNativeDisplayId(), GetNativeObjectScale());
+        return;
+    }
+    //end npcbot
     SetDisplayId(GetNativeDisplayId());
 }
 

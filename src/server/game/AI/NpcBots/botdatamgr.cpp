@@ -783,7 +783,12 @@ private:
         {
             bot_template.Name = look.name;
             if (look.displayId)
-                bot_template.Models = { CreatureModel(look.displayId, 1.0f, 1.0f) };
+            {
+                // some borrowed models are drawn bigger (Uzo Deathcaller's 1.5), keep the bot at the size of its race
+                CreatureDisplayInfoEntry const* displayInfo = sCreatureDisplayInfoStore.LookupEntry(look.displayId);
+                float const displayScale = displayInfo && displayInfo->scale > 0.0f ? 1.0f / displayInfo->scale : 1.0f;
+                bot_template.Models = { CreatureModel(look.displayId, displayScale, 1.0f) };
+            }
         }
 
         uint32 max_level = DEFAULT_MAX_LEVEL;
