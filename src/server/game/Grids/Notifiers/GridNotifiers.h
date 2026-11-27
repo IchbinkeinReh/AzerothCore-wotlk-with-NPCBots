@@ -1037,7 +1037,7 @@ namespace Acore
         AnyGroupedUnitInObjectRangeCheck(WorldObject const* obj, Unit const* funit, float range, bool raid) : _source(obj), _refUnit(funit), _range(range), _raid(raid) {}
         bool operator()(Unit* u)
         {
-            if (u->IsVehicle())
+            if (u->IsCreature() && u->IsVehicle())
                 return false;
 
             if (_raid)
@@ -1303,8 +1303,8 @@ namespace Acore
             if (!u->CanAssistTo(i_funit, i_enemy))
                 return false;
 
-            // too far
-            if (!i_funit->IsWithinDistInMap(u, i_range))
+            // too far, centre to centre: Classic testing shows no combat reach added
+            if (!i_funit->IsWithinDistInMap(u, i_range, true, false, false))
                 return false;
 
             // only if see assisted creature
@@ -1540,7 +1540,8 @@ namespace Acore
     class MostHPMissingGroupInRange
     {
     public:
-        MostHPMissingGroupInRange(Unit const* obj, float range, uint32 hp) : i_obj(obj), i_range(range), i_hp(hp) {}
+        MostHPMissingGroupInRange(Unit const* obj, float range, uint32 hp, Player const* assister = nullptr)
+            : i_obj(obj), i_range(range), i_hp(hp), i_assister(assister) {}
 
         bool operator()(Unit* u)
         {
@@ -1575,6 +1576,10 @@ namespace Acore
                 return false;
             }
 
+            // can't assist player which is dueling someone
+            if (i_assister && player != i_assister && player->duel)
+                return false;
+
             if (u->IsAlive() && !i_obj->IsHostileTo(u) && i_obj->IsWithinDistInMap(u, i_range) && u->GetMaxHealth() - u->GetHealth() >= i_hp)
             {
                 i_hp = u->GetMaxHealth() - u->GetHealth();
@@ -1588,6 +1593,7 @@ namespace Acore
         Unit const* i_obj;
         float       i_range;
         uint32      i_hp;
+        Player const* i_assister;
     };
 
     class AllDeadCreaturesInRange

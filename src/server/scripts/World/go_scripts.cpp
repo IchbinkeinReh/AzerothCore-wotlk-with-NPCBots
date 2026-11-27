@@ -818,93 +818,6 @@ public:
 };
 
 /*######
-## go_gilded_brazier (Paladin quest 9678 "The First Trial")
-######*/
-
-enum GildedBrazier
-{
-    EVENT_STILLBLADE_SPAWN = 1,
-    EVENT_RESET_BRAZIER    = 2,
-    NPC_STILLBLADE         = 17716,
-    QUEST_THE_FIRST_TRIAL  = 9678
-};
-
-class go_gilded_brazier : public GameObjectScript
-{
-public:
-    go_gilded_brazier() : GameObjectScript("go_gilded_brazier") { }
-
-    struct go_gilded_brazierAI : public GameObjectAI
-    {
-        go_gilded_brazierAI(GameObject* go) : GameObjectAI(go)
-        {
-            Initialize();
-        }
-
-        void Initialize()
-        {
-            _playerGUID.Clear();
-        }
-
-        bool GossipHello(Player* player, bool reportUse) override
-        {
-            if (reportUse)
-                return false;
-
-            if (me->GetGoType() == GAMEOBJECT_TYPE_GOOBER)
-            {
-                if (player->GetQuestStatus(QUEST_THE_FIRST_TRIAL) == QUEST_STATUS_INCOMPLETE)
-                {
-                    _playerGUID = player->GetGUID();
-                    me->SetGameObjectFlag((GameObjectFlags)1);
-                    me->RemoveByteFlag(GAMEOBJECT_BYTES_1, 0, 1);
-                    _events.ScheduleEvent(EVENT_STILLBLADE_SPAWN, 1s);
-                }
-            }
-            return true;
-        }
-
-        void UpdateAI(uint32 const diff) override
-        {
-            _events.Update(diff);
-
-            while (uint32 eventId = _events.ExecuteEvent())
-            {
-                switch (eventId)
-                {
-                case EVENT_STILLBLADE_SPAWN:
-                {
-                    if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
-                    {
-                        player->SummonCreature(NPC_STILLBLADE, 8032.587f, -7524.518f, 149.68073f, 6.161012172698974609f, TEMPSUMMON_DEAD_DESPAWN, 60000);
-                        _events.ScheduleEvent(EVENT_RESET_BRAZIER, 4s);
-                    }
-                    break;
-                }
-                case EVENT_RESET_BRAZIER:
-                {
-                    me->RemoveGameObjectFlag((GameObjectFlags)1);
-                    me->SetByteFlag(GAMEOBJECT_BYTES_1, 0, 1);
-                    break;
-                }
-                default:
-                    break;
-                }
-            }
-        }
-
-    private:
-        EventMap _events;
-        ObjectGuid _playerGUID;
-    };
-
-    GameObjectAI* GetAI(GameObject* go) const override
-    {
-        return new go_gilded_brazierAI(go);
-    }
-};
-
-/*######
 ## go_tablet_of_the_seven
 ######*/
 
@@ -1646,42 +1559,6 @@ public:
     }
 };
 
-/*########
-#### go_veil_skith_cage
-#####*/
-
-enum MissingFriends
-{
-    QUEST_MISSING_FRIENDS    = 10852,
-    NPC_CAPTIVE_CHILD        = 22314,
-    SAY_FREE_0               = 0,
-};
-
-class go_veil_skith_cage : public GameObjectScript
-{
-public:
-    go_veil_skith_cage() : GameObjectScript("go_veil_skith_cage") { }
-
-    bool OnGossipHello(Player* player, GameObject* go) override
-    {
-        go->UseDoorOrButton();
-        if (player->GetQuestStatus(QUEST_MISSING_FRIENDS) == QUEST_STATUS_INCOMPLETE)
-        {
-            std::list<Creature*> childrenList;
-            GetCreatureListWithEntryInGrid(childrenList, go, NPC_CAPTIVE_CHILD, INTERACTION_DISTANCE);
-            for (std::list<Creature*>::const_iterator itr = childrenList.begin(); itr != childrenList.end(); ++itr)
-            {
-                player->KilledMonsterCredit(NPC_CAPTIVE_CHILD, (*itr)->GetGUID());
-                (*itr)->DespawnOrUnsummon(5s);
-                (*itr)->GetMotionMaster()->MovePoint(1, go->GetPositionX() + 5, go->GetPositionY(), go->GetPositionZ());
-                (*itr)->AI()->Talk(SAY_FREE_0);
-                (*itr)->GetMotionMaster()->Clear();
-            }
-        }
-        return false;
-    }
-};
-
 /*####
 ## go_bells
 ####*/
@@ -1888,7 +1765,6 @@ void AddSC_go_scripts()
     new go_pirate_day_music();
     new go_darkmoon_faire_music();
     new go_midsummer_music();
-    new go_gilded_brazier();
     //new go_shrine_of_the_birds();
     new go_southfury_moonstone();
     new go_tablet_of_the_seven();
@@ -1907,6 +1783,5 @@ void AddSC_go_scripts()
     new go_amberpine_outhouse();
     new go_hive_pod();
     new go_massive_seaforium_charge();
-    new go_veil_skith_cage();
     new go_bells();
 }

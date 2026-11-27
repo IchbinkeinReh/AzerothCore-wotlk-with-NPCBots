@@ -836,19 +836,6 @@ void Spell::EffectDummy(SpellEffIndex effIndex)
                                     unitCaster->CastSpell(unitTarget, 66904, true);
                                 return;
                             }
-                        case 17731:
-                        case 69294:
-                            {
-                                if (!gameObjTarget || gameObjTarget->GetRespawnTime() > GameTime::GetGameTime().count())
-                                    return;
-
-                                gameObjTarget->SetRespawnTime(10);
-                                gameObjTarget->SendCustomAnim(gameObjTarget->GetGoAnimProgress());
-                                if (Creature* trigger = gameObjTarget->SummonCreature(12758, *gameObjTarget, TEMPSUMMON_TIMED_DESPAWN, 1000))
-                                    trigger->CastSpell(trigger, 17731, false);
-
-                                return;
-                            }
                         // HoL, Arc Weld
                         case 59086:
                             {
@@ -2168,16 +2155,20 @@ void Spell::EffectPersistentAA(SpellEffIndex effIndex)
 
 void Spell::EffectEnergize(SpellEffIndex effIndex)
 {
-    Unit* unitCaster = GetUnitCasterForEffectHandlers();
-    if (!unitCaster)
-        return;
-
     if (effectHandleMode != SPELL_EFFECT_HANDLE_HIT_TARGET)
         return;
 
     if (!unitTarget)
         return;
+
     if (!unitTarget->IsAlive())
+        return;
+
+    Unit* unitCaster = GetUnitCasterForEffectHandlers();
+    if (!unitCaster && m_caster->IsGameObject())
+        unitCaster = unitTarget;
+
+    if (!unitCaster)
         return;
 
     if (unitTarget->IsImmunedToAuraPeriodicTick(unitCaster, m_spellInfo))
@@ -2280,16 +2271,20 @@ void Spell::EffectEnergize(SpellEffIndex effIndex)
 
 void Spell::EffectEnergizePct(SpellEffIndex effIndex)
 {
-    Unit* unitCaster = GetUnitCasterForEffectHandlers();
-    if (!unitCaster)
-        return;
-
     if (effectHandleMode != SPELL_EFFECT_HANDLE_HIT_TARGET)
         return;
 
     if (!unitTarget)
         return;
+
     if (!unitTarget->IsAlive())
+        return;
+
+    Unit* unitCaster = GetUnitCasterForEffectHandlers();
+    if (!unitCaster && m_caster->IsGameObject())
+        unitCaster = unitTarget;
+
+    if (!unitCaster)
         return;
 
     if (unitTarget->HasUnitState(UNIT_STATE_ISOLATED))
@@ -2698,14 +2693,13 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
         return;
     }
 
-    if (!m_originalCaster)
-        return;
-
+    // prefer the unit original caster, fall back to the WorldObject caster (e.g. GameObject traps)
+    WorldObject* caster = m_originalCaster ? m_originalCaster : m_caster;
     Unit* unitCaster = m_originalCaster;
 
     bool personalSpawn = (properties->Flags & SUMMON_PROP_FLAG_ONLY_VISIBLE_TO_SUMMONER) != 0;
     int32 duration = m_spellInfo->GetDuration();
-    if (Player* modOwner = unitCaster->GetSpellModOwner())
+    if (Player* modOwner = caster->GetSpellModOwner())
         modOwner->ApplySpellMod(m_spellInfo->Id, SPELLMOD_DURATION, duration);
 
     TempSummon* summon = nullptr;
@@ -2762,19 +2756,25 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
                 // Summons a vehicle, but doesn't force anyone to enter it (see SUMMON_CATEGORY_VEHICLE)
                 case SUMMON_TYPE_VEHICLE:
                 case SUMMON_TYPE_VEHICLE2:
-                    summon = m_caster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
+                    if (!unitCaster)
+                        return;
+
+                    summon = unitCaster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
                     break;
                 case SUMMON_TYPE_LIGHTWELL:
                 case SUMMON_TYPE_TOTEM:
                     {
+                        if (!unitCaster)
+                            return;
+
                         // protection code
-                        summon = m_caster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
+                        summon = unitCaster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
                         if (!summon || !summon->IsTotem())
                             return;
 
                         // Mana Tide Totem
                         if (m_spellInfo->Id == 16190)
-                            damage = m_caster->ToUnit()->CountPctFromMaxHealth(10);
+                            damage = unitCaster->CountPctFromMaxHealth(10);
 
                         if (damage && properties->Type != SUMMON_TYPE_LIGHTWELL) // Health set in script for lightwell
                         {
@@ -2784,6 +2784,9 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
                         break;
                     }
                 case SUMMON_TYPE_MINIPET:
+                    if (!unitCaster)
+                        return;
+
                     // For companions, recalculate the position to ensure they spawn at the intended π/4 angle.
                     destTarget->Relocate(unitCaster->GetNearPosition(
                         unitCaster->GetDistance2d(destTarget->GetPositionX(), destTarget->GetPositionY()),
@@ -2792,7 +2795,10 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
                     [[fallthrough]];
                 case SUMMON_TYPE_JEEVES:
                     {
-                        summon = m_caster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
+                        if (!unitCaster)
+                            return;
+
+                        summon = unitCaster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
                         if (!summon || !summon->HasUnitTypeMask(UNIT_MASK_MINION))
                             return;
 
@@ -2818,7 +2824,7 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
 
                         TempSummonType summonType = (duration <= 0) ? TEMPSUMMON_DEAD_DESPAWN : TEMPSUMMON_TIMED_DESPAWN;
 
-                        WorldObject* summoner = unitCaster;
+                        WorldObject* summoner = caster;
                         if (Unit* unitSummoner = summoner->ToUnit())
                             if (unitSummoner->IsPet())
                                 if (Unit* owner = unitSummoner->GetOwner())
@@ -2831,7 +2837,7 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
                                 pos = *destTarget;
                             else
                                 // randomize position for multiple summons
-                                pos = m_caster->GetRandomPoint(*destTarget, radius);
+                                pos = caster->GetRandomPoint(*destTarget, radius);
 
                             summon = summoner->SummonCreature(entry, pos, summonType, duration, 0, nullptr, personalSpawn);
                             if (!summon)
@@ -2858,18 +2864,24 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
             SummonGuardian(effIndex, entry, properties, numSummons, personalSpawn);
             break;
         case SUMMON_CATEGORY_PUPPET:
-            summon = m_caster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
+            if (!unitCaster)
+                return;
+
+            summon = unitCaster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
             break;
         case SUMMON_CATEGORY_VEHICLE:
+            if (!unitCaster)
+                return;
+
             // Summoning spells (usually triggered by npc_spellclick) that spawn a vehicle and that cause the clicker
             // to cast a ride vehicle spell on the summoned unit.
             //float x, y, z;
-            //m_caster->GetClosePoint(x, y, z, DEFAULT_WORLD_OBJECT_SIZE);
+            //unitCaster->GetClosePoint(x, y, z, DEFAULT_WORLD_OBJECT_SIZE);
             // xinef: vehicles summoned in air, eg. Cold Hearted quest
-            if (std::fabs(m_caster->GetPositionZ() - destTarget->GetPositionZ()) > 6.0f)
-                destTarget->m_positionZ = m_caster->GetPositionZ();
+            if (std::fabs(unitCaster->GetPositionZ() - destTarget->GetPositionZ()) > 6.0f)
+                destTarget->m_positionZ = unitCaster->GetPositionZ();
 
-            summon = unitCaster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, m_caster->ToUnit(), m_spellInfo->Id, 0, personalSpawn);
+            summon = unitCaster->GetMap()->SummonCreature(entry, *destTarget, properties, duration, unitCaster, m_spellInfo->Id, 0, personalSpawn);
             if (!summon || !summon->IsVehicle())
                 return;
 
@@ -2900,7 +2912,7 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
 
     if (summon)
     {
-        summon->SetCreatorGUID(unitCaster->GetGUID());
+        summon->SetCreatorGUID(caster->GetGUID());
         ExecuteLogEffectSummonObject(effIndex, summon);
     }
 }
@@ -3286,6 +3298,7 @@ void Spell::EffectEnchantItemPerm(SpellEffIndex effIndex)
         }
 
         item_owner->RemoveTradeableItem(itemTarget);
+        itemTarget->SetNotRefundable(item_owner);
         itemTarget->ClearSoulboundTradeable(item_owner);
     }
 }
@@ -3354,6 +3367,7 @@ void Spell::EffectEnchantItemPrismatic(SpellEffIndex effIndex)
     item_owner->ApplyEnchantment(itemTarget, PRISMATIC_ENCHANTMENT_SLOT, true);
 
     item_owner->RemoveTradeableItem(itemTarget);
+    itemTarget->SetNotRefundable(item_owner);
     itemTarget->ClearSoulboundTradeable(item_owner);
 }
 
@@ -3521,6 +3535,7 @@ void Spell::EffectEnchantItemTmp(SpellEffIndex effIndex)
     }
 
     item_owner->RemoveTradeableItem(itemTarget);
+    itemTarget->SetNotRefundable(item_owner);
     itemTarget->ClearSoulboundTradeable(item_owner);
 }
 
@@ -4042,6 +4057,9 @@ void Spell::EffectWeaponDmg(SpellEffIndex effIndex)
             break;
         case OFF_ATTACK:
             unitMod = UNIT_MOD_DAMAGE_OFFHAND;
+            // Base damage is already halved in DBC for Threat of Thassarian off-hand spells
+            if (m_spellInfo->SpellFamilyName == SPELLFAMILY_DEATHKNIGHT)
+                fixed_bonus *= 2;
             break;
         case RANGED_ATTACK:
             unitMod = UNIT_MOD_DAMAGE_RANGED;
@@ -5479,7 +5497,7 @@ void Spell::EffectKnockBack(SpellEffIndex effIndex)
     // Xinef: allow entry specific spells to skip those checks
     if (m_spellInfo->Effects[effIndex].TargetA.GetCheckType() != TARGET_CHECK_ENTRY && m_spellInfo->Effects[effIndex].TargetB.GetCheckType() != TARGET_CHECK_ENTRY)
     {
-        if (unitTarget->IsVehicle() && unitTarget->GetCreatureType() != CREATURE_TYPE_BEAST)
+        if (unitTarget->IsCreature() && unitTarget->IsVehicle() && unitTarget->GetCreatureType() != CREATURE_TYPE_BEAST)
             return;
 
         if (unitTarget->GetVehicle())
@@ -5936,8 +5954,12 @@ void Spell::EffectTransmitted(SpellEffIndex effIndex)
 
     GameObject* pGameObj = sObjectMgr->IsGameObjectStaticTransport(name_id) ? new StaticTransport() : new GameObject();
 
-    G3D::Quat rotation = G3D::Quat::fromAxisAngleRotation(G3D::Vector3::unitZ(), unitCaster->GetOrientation());
-    if (!pGameObj->Create(cMap->GenerateLowGuid<HighGuid::GameObject>(), name_id, cMap, unitCaster->GetPhaseMask(), fx, fy, fz, unitCaster->GetOrientation(), rotation, 100, GO_STATE_READY))
+    // A summoned gameobject faces the way its actual caster faces: a ritual object casting on its owner's behalf
+    // keeps its own orientation.
+    float orientation = m_caster->GetOrientation();
+    G3D::Quat rotation = G3D::Quat::fromAxisAngleRotation(G3D::Vector3::unitZ(), orientation);
+    if (!pGameObj->Create(cMap->GenerateLowGuid<HighGuid::GameObject>(), name_id, cMap, unitCaster->GetPhaseMask(),
+        fx, fy, fz, orientation, rotation, 100, GO_STATE_READY))
     {
         delete pGameObj;
         return;
@@ -6639,7 +6661,7 @@ void Spell::SummonGuardian(uint32 i, uint32 entry, SummonPropertiesEntry const* 
         // xinef: do not use precalculated position for effect summon pet in this function
         // it means it was cast by NPC and should have its position overridden unless the
         // target position is specified in the DB AND the effect has no or zero radius
-        if ((totalNumGuardians == 1 && GetSpellInfo()->Effects[i].Effect != SPELL_EFFECT_SUMMON_PET) ||
+        if ((numGuardians == 1 && GetSpellInfo()->Effects[i].Effect != SPELL_EFFECT_SUMMON_PET) ||
             (GetSpellInfo()->Effects[i].TargetA.GetTarget() == TARGET_DEST_DB &&
             (!GetSpellInfo()->Effects[i].HasRadius() || GetSpellInfo()->Effects[i].RadiusEntry->RadiusMax == 0)))
         {

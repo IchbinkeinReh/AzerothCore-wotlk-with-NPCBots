@@ -277,6 +277,8 @@ enum Misc
     SUMMON_GROUP_ICECROWN_TENTACLES     = 2,
     SUMMON_GROUP_STORMWIND_TENTACLES    = 3,
 
+    SUMMON_GROUP_CLOUDS                 = 0,
+
     // ACTION_SARA_UPDATE_SUMMON_KEEPERS = 4, // defined in ulduar.h
 
     EVENT_PHASE_ONE                     = 1,
@@ -294,19 +296,13 @@ enum Misc
     DATA_GET_SARA_PHASE                 = 3,
     DATA_GET_DRIVE_ME_CRAZY             = 4,
     DATA_YOGG_SARON_HEALTH              = 5,
+
+    LOOT_MODE_REFORGED_HAMMER = 32
 };
 
 struct LocationsXY
 {
     float x, y, z;
-};
-
-Position const GossipKeepersPos[4] =
-{
-    {1945.6823f, 33.342014f, 411.44083f, 5.270895f}, // Freya
-    {1945.7609f, -81.52171f,  411.4407f, 1.029744f}, // Hodir
-    {2028.7656f,  17.42014f, 411.44458f, 3.857178f}, // Mimiron
-    {2028.8219f, -65.73573f, 411.44257f, 2.460914f}  // Thorim
 };
 
 const Position KeepersPos[4] =
@@ -318,7 +314,6 @@ const Position KeepersPos[4] =
 };
 
 const uint32 TABLE_KEEPER_ENTRY[4] = {NPC_FREYA_KEEPER, NPC_HODIR_KEEPER, NPC_MIMIRON_KEEPER, NPC_THORIM_KEEPER};
-const uint32 TABLE_GOSSIP_ENTRY[4] = {NPC_FREYA_GOSSIP, NPC_HODIR_GOSSIP, NPC_MIMIRON_GOSSIP, NPC_THORIM_GOSSIP};
 
 static LocationsXY yoggPortalLoc[] =
 {
@@ -436,14 +431,7 @@ struct boss_yoggsaron_sara : public ScriptedAI
 
     void SpawnClouds()
     {
-        for (uint8 i = 0; i < 6; ++i)
-        {
-            float Zplus = i > 2 ? (i - 2) * 1.6f : 0;
-            if (i % 2)
-                me->SummonCreature(NPC_OMINOUS_CLOUD, me->GetPositionX() + 8 + i * 7, me->GetPositionY() + 8 + i * 7, 326 + Zplus, 0);
-            else
-                me->SummonCreature(NPC_OMINOUS_CLOUD, me->GetPositionX() - 8 - i * 7, me->GetPositionY() - 8 - i * 7, 326 + Zplus, 0);
-        }
+        me->SummonCreatureGroup(SUMMON_GROUP_CLOUDS);
     }
 
     void EnterEvadeMode(EvadeReason why) override
@@ -579,11 +567,8 @@ struct boss_yoggsaron_sara : public ScriptedAI
             DATA_MIMIRON_GOSSIP, DATA_THORIM_GOSSIP
         };
         for (uint8 i = KEEPER_FREYA; i <= KEEPER_THORIM; i++)
-        {
-            summons.DespawnEntry(TABLE_GOSSIP_ENTRY[i]);
             if (Creature* keeper = _instance->GetCreature(gossipData[i]))
                 keeper->DespawnOrUnsummon();
-        }
     }
 
     void UpdateKeeperSpawns()
@@ -734,10 +719,6 @@ struct boss_yoggsaron_sara : public ScriptedAI
             summons.DespawnEntry(NPC_CONSTRICTOR_TENTACLE);
             summons.DespawnEntry(NPC_CORRUPTOR_TENTACLE);
             summons.DespawnEntry(NPC_BRAIN_OF_YOGG_SARON);
-            summons.DespawnEntry(NPC_MIMIRON_GOSSIP);
-            summons.DespawnEntry(NPC_HODIR_GOSSIP);
-            summons.DespawnEntry(NPC_FREYA_GOSSIP);
-            summons.DespawnEntry(NPC_THORIM_GOSSIP);
             summons.DespawnEntry(NPC_MIMIRON_KEEPER);
             summons.DespawnEntry(NPC_HODIR_KEEPER);
             summons.DespawnEntry(NPC_FREYA_KEEPER);
@@ -1039,6 +1020,8 @@ struct boss_yoggsaron_sara : public ScriptedAI
 
 struct boss_yoggsaron_cloud : public PassiveAI
 {
+    static bool clockwise;
+
     boss_yoggsaron_cloud(Creature* creature) : PassiveAI(creature)
     {
         Reset();
@@ -1080,9 +1063,9 @@ struct boss_yoggsaron_cloud : public PassiveAI
 
     void MoveCircle()
     {
-        bool clockwise = me->GetPositionX() < Middle.GetPositionX();
         me->GetMotionMaster()->MoveCirclePath(Middle.GetPositionX(), Middle.GetPositionY(), me->GetPositionZ(),
             Middle.GetExactDist2d(me), clockwise, 16);
+        clockwise = !clockwise;
     }
 
     void UpdateAI(uint32 diff) override
@@ -1103,38 +1086,64 @@ struct boss_yoggsaron_cloud : public PassiveAI
     }
 };
 
+bool boss_yoggsaron_cloud::clockwise = true;
+
 struct boss_yoggsaron_guardian_of_ys : public ScriptedAI
 {
     boss_yoggsaron_guardian_of_ys(Creature* creature) : ScriptedAI(creature) { }
 
-    uint32 _spellTimer;
-
     void Reset() override
     {
-        _spellTimer = 0;
+        scheduler.CancelAll();
+        _dying = false;
         me->SetInCombatWithZone();
+
+        ScheduleTimedEvent(8s, [this]
+        {
+            if (!_dying && me->GetVictim())
+                DoCastSelf(SPELL_DARK_VOLLEY);
+        }, 8s);
     }
 
-    void JustDied(Unit*) override
+    void DamageTaken(Unit* /*attacker*/, uint32& damage, DamageEffectType /*damagetype*/, SpellSchoolMask /*damageSchoolMask*/) override
     {
+        if (_dying)
+        {
+            damage = 0;
+            return;
+        }
+
+        if (damage < me->GetHealth())
+            return;
+
+        damage = me->GetHealth() - 1;
+        _dying = true;
+        me->InterruptNonMeleeSpells(false);
         DoCastAOE(SPELL_SHADOW_NOVA, true);
+
+        ScheduleUniqueTimedEvent(100ms, [this]()
+        {
+            me->KillSelf();
+        }, 1);
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
         DoCastAOE(SPELL_SHADOW_NOVA_SARA, true);
     }
 
     void UpdateAI(uint32 diff) override
     {
-        if (!UpdateVictim())
-            return;
+        scheduler.Update(diff);
 
-        _spellTimer += diff;
-        if (_spellTimer > 8000)
-        {
-            me->CastSpell(me, SPELL_DARK_VOLLEY, false);
-            _spellTimer = 0;
-        }
+        if (_dying || !UpdateVictim())
+            return;
 
         DoMeleeAttackIfReady();
     }
+
+private:
+    bool _dying = false;
 };
 
 struct boss_yoggsaron : public ScriptedAI
@@ -1206,6 +1215,9 @@ struct boss_yoggsaron : public ScriptedAI
         {
             me->KillSelf();
         }, 500ms);
+
+        if (me->HasAura(SPELL_IN_THE_MAWS_OF_THE_OLD_GOD))
+            me->AddLootMode(LOOT_MODE_REFORGED_HAMMER);
     }
 
     void JustDied(Unit*  /*who*/) override
@@ -1299,12 +1311,6 @@ struct boss_yoggsaron : public ScriptedAI
     {
         if (param == DATA_YOGG_SARON_HEALTH)
             me->SetHealth(me->GetMaxHealth() * value / 100.0f);
-    }
-
-    void SpellHit(Unit*  /*caster*/, SpellInfo const* spellInfo) override
-    {
-        if (spellInfo->Id == SPELL_IN_THE_MAWS_OF_THE_OLD_GOD)
-            me->AddLootMode(32);
     }
 
     void UpdateAI(uint32 diff) override
@@ -1709,6 +1715,16 @@ struct boss_yoggsaron_corruptor_tentacle : public ScriptedAI
     boss_yoggsaron_corruptor_tentacle(Creature* creature) : ScriptedAI(creature)
     {
         me->SetCombatMovement(false);
+
+        scheduler.SetValidator([this]
+        {
+            return !me->HasUnitState(UNIT_STATE_CASTING);
+        });
+    }
+
+    void Reset() override
+    {
+        scheduler.CancelAll();
     }
 
     void DoAction(int32 param) override
@@ -1737,16 +1753,18 @@ struct boss_yoggsaron_corruptor_tentacle : public ScriptedAI
         return target;
     }
 
-    void UpdateAI(uint32  /*diff*/) override
+    void JustEngagedWith(Unit* /*who*/) override
     {
-        if (me->HasUnitState(UNIT_STATE_CASTING))
-            return;
-
-        if (Unit* target = SelectCorruptionTarget())
+        ScheduleTimedEvent(500ms, [&]
         {
-            uint32 spellid = RAND(SPELL_APATHY, SPELL_BLACK_PLAGUE, SPELL_DRAINING_POISON, SPELL_CURSE_OF_DOOM);
-            me->CastSpell(target, spellid, false);
-        }
+            if (Unit* target = SelectCorruptionTarget())
+                DoCast(target, RAND(SPELL_APATHY, SPELL_BLACK_PLAGUE, SPELL_DRAINING_POISON, SPELL_CURSE_OF_DOOM));
+        }, 2s);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        scheduler.Update(diff);
     }
 };
 
@@ -2402,12 +2420,24 @@ class spell_yogg_saron_diminish_power_aura : public AuraScript
 {
     PrepareAuraScript(spell_yogg_saron_diminish_power_aura);
 
+    static bool IsJudgementDamageSpell(SpellInfo const* spellInfo)
+    {
+        return spellInfo &&
+            spellInfo->SpellFamilyName == SPELLFAMILY_PALADIN &&
+            (spellInfo->SpellFamilyFlags[0] & 0x800000);
+    }
+
     // Serverside proc (no triggered spell in DBC): taken melee hits and melee
     // abilities break the Diminish Power channel. Sniffed: only the active
     // channel breaks, the initial 1.5s cast is not interruptible by damage
-    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& /*eventInfo*/)
+    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
     {
         PreventDefaultAction();
+
+        DamageInfo* damageInfo = eventInfo.GetDamageInfo();
+        if (!damageInfo || !damageInfo->GetDamage() || IsJudgementDamageSpell(eventInfo.GetSpellInfo()))
+            return;
+
         if (Spell* spell = GetTarget()->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
             if (spell->getState() == SPELL_STATE_CASTING)
                 GetTarget()->InterruptSpell(CURRENT_CHANNELED_SPELL);

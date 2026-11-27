@@ -1721,7 +1721,8 @@ bool SpellInfo::ValidateAttribute6SpellDamageMods(Unit const* caster, AuraEffect
     return !isDot && auraEffect && (auraEffect->GetAmount() < 0 || (auraEffect->GetCasterGUID() == caster->GetGUID() && auraEffect->GetSpellInfo()->SpellFamilyName == SpellFamilyName)) && !auraEffect->GetBase()->GetCastItemGUID();
 }
 
-SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject const* target, bool implicit) const
+SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject const* target, bool implicit,
+    Unit const* originalCaster) const
 {
     if (AttributesEx & SPELL_ATTR1_EXCLUDE_CASTER && caster == target)
         return SPELL_FAILED_BAD_TARGETS;
@@ -1737,6 +1738,19 @@ SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject co
     // creature/player specific target checks
     if (unitTarget)
     {
+        // can't assist player which is dueling someone, also for spells with generic unit targets (e.g. Devour Magic)
+        // boarding a dueling player's passenger mount is not an assist
+        // owner is taken from the original caster of aura-triggered casts, so a duelist's Prayer of Mending can still
+        // jump back to them (spellclicks set the clicker as original caster, so they keep using the caster)
+        Unit const* assistingUnit = originalCaster ? originalCaster : unitCaster;
+        if (unitCaster && unitCaster != unitTarget && !HasAura(SPELL_AURA_CONTROL_VEHICLE))
+            if (Player const* targetPlayerOwner = unitTarget->GetAffectingPlayer())
+                if (targetPlayerOwner->duel)
+                    if (Player const* casterPlayerOwner = assistingUnit->GetAffectingPlayer())
+                        if (casterPlayerOwner != targetPlayerOwner
+                                && !unitCaster->IsValidAttackTarget(unitTarget, this))
+                            return SPELL_FAILED_TARGET_DUELING;
+
         // xinef: spells cannot be cast if player is in fake combat also
         if (AttributesEx & SPELL_ATTR1_ONLY_PEACEFUL_TARGETS && (unitTarget->IsInCombat() || unitTarget->IsPetInCombat()))
             return SPELL_FAILED_TARGET_AFFECTING_COMBAT;
@@ -1878,7 +1892,7 @@ SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject co
     }
 
     // check GM mode and GM invisibility - only for player casts (npc casts are controlled by AI) and negative spells
-    if (unitTarget != caster && ((unitCaster && unitCaster->IsControlledByPlayer()) || !IsPositive()) && unitTarget->IsPlayer())
+    if (unitTarget != caster && (caster->GetAffectingPlayer() || !IsPositive()) && unitTarget->IsPlayer())
     {
         if (!unitTarget->ToPlayer()->IsVisible())
             return SPELL_FAILED_BM_OR_INVISGOD;
@@ -1898,7 +1912,7 @@ SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject co
     him, because it would be it's passenger, there's no such case where this gets to fail legitimacy, this problem
     cannot be solved from within the check in other way since target type cannot be called for the spell currently
     Spell examples: [ID - 52864 Devour Water, ID - 52862 Devour Wind, ID - 49370 Wyrmrest Defender: Destabilize Azure Dragonshrine Effect] */
-    if ((!unitCaster || !unitCaster->IsVehicle()) && (!unitCaster || unitCaster->GetCharmerOrOwner() != target))
+    if ((!unitCaster || !(unitCaster->IsCreature() && unitCaster->IsVehicle())) && (!unitCaster || unitCaster->GetCharmerOrOwner() != target))
     {
         if (TargetAuraState && !unitTarget->HasAuraState(AuraStateType(TargetAuraState), this, unitCaster))
             return SPELL_FAILED_TARGET_AURASTATE;
@@ -2112,7 +2126,10 @@ AuraStateType SpellInfo::LoadAuraState() const
     {
         case 71465: // Divine Surge
         case 50241: // Oculus, Drake spell Evasive Maneuvers
+        case 68403: // Aura State Raid Encounter
             return AURA_STATE_UNKNOWN22;
+        case 68402: // Aura State Vulnerable
+            return AURA_STATE_UNKNOWN19;
         case 9991:  // Touch of Zanzil
         case 35331: // Black Blood
         case 9806:  // Phantom Strike

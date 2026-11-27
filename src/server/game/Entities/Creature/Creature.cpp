@@ -553,7 +553,8 @@ bool Creature::InitEntry(uint32 Entry, CreatureData const* data)
         return false;
     }
 
-    SetDisplayId(model.CreatureDisplayID, model.DisplayScale);
+    _nativeObjectScale = model.DisplayScale;
+    SetDisplayId(model.CreatureDisplayID);
     SetNativeDisplayId(model.CreatureDisplayID);
 
     // Load creature equipment
@@ -579,9 +580,6 @@ bool Creature::InitEntry(uint32 Entry, CreatureData const* data)
     SetSpeed(MOVE_RUN, cinfo->speed_run);
     SetSpeed(MOVE_SWIM, cinfo->speed_swim);
     SetSpeed(MOVE_FLIGHT, cinfo->speed_flight);
-
-    // Will set UNIT_FIELD_BOUNDINGRADIUS and UNIT_FIELD_COMBATREACH
-    SetObjectScale(GetNativeObjectScale());
 
     SetFloatValue(UNIT_FIELD_HOVERHEIGHT, cinfo->HoverHeight);
 
@@ -1299,7 +1297,8 @@ bool Creature::Create(ObjectGuid::LowType guidlow, Map* map, uint32 phaseMask, u
     CreatureModelInfo const* minfo = sObjectMgr->GetCreatureModelRandomGender(&display, cinfo);
     if (minfo && !IsTotem())                               // Cancel load if no model defined or if totem
     {
-        SetDisplayId(display.CreatureDisplayID, display.DisplayScale);
+        _nativeObjectScale = display.DisplayScale;
+        SetDisplayId(display.CreatureDisplayID);
         SetNativeDisplayId(display.CreatureDisplayID);
     }
 
@@ -2142,7 +2141,17 @@ void Creature::setDeathState(DeathState state, bool despawn)
         if (m_formation && m_formation->GetLeader() == this)
             m_formation->FormationReset(true, false);
 
-        bool needsFalling = !despawn && (IsFlying() || IsHovering()) && !IsUnderWater();
+        bool const inWater = (GetLiquidData().Status & MAP_LIQUID_STATUS_IN_CONTACT) != 0;
+        // A creature still rooted here (template or script root) cannot fall; its corpse stays where it died.
+        bool const mayFall = !despawn && !inWater && !GetTransport() && !GetVehicle()
+            && !HasUnitMovementFlag(MOVEMENTFLAG_ROOT);
+        bool needsFalling = mayFall && IsFlying();
+        if (mayFall && !needsFalling)
+        {
+            float const floorZ = GetFloorZ();
+            needsFalling = floorZ > INVALID_HEIGHT
+                && G3D::fuzzyGt(GetPositionZ(), floorZ + GROUND_HEIGHT_TOLERANCE);
+        }
         SetHover(false);
         SetDisableGravity(false);
 
@@ -2266,7 +2275,8 @@ void Creature::Respawn(bool force)
                     CreatureModelInfo const* minfo = sObjectMgr->GetCreatureModelRandomGender(&display, GetCreatureTemplate());
                     if (minfo)                                             // Cancel load if no model defined
                     {
-                        SetDisplayId(display.CreatureDisplayID, display.DisplayScale);
+                        _nativeObjectScale = display.DisplayScale;
+                        SetDisplayId(display.CreatureDisplayID);
                         SetNativeDisplayId(display.CreatureDisplayID);
                     }
                 }
@@ -2303,8 +2313,13 @@ void Creature::Respawn(bool force)
             if (m_spawnId)
             {
                 // Set respawn time to now so ProcessRespawns() picks it up
-                time_t now = GameTime::GetGameTime().count();
-                GetMap()->SaveCreatureRespawnTime(m_spawnId, now);
+                if (force)
+                    GetMap()->ForceCreatureRespawn(m_spawnId);
+                else
+                {
+                    time_t now = GameTime::GetGameTime().count();
+                    GetMap()->SaveCreatureRespawnTime(m_spawnId, now);
+                }
             }
             AddObjectToRemoveList();
         }
@@ -3275,6 +3290,22 @@ bool Creature::HasSpellCooldown(uint32 spell_id) const
     return (itr != m_CreatureSpellCooldowns.end() && itr->second.end > GameTime::GetGameTimeMS().count());
 }
 
+void Creature::RemoveSpellCooldown(uint32 spell_id, bool update /* = false */)
+{
+    m_CreatureSpellCooldowns.erase(spell_id);
+
+    if (update)
+    {
+        if (Player* playerOwner = GetCharmerOrOwnerPlayerOrPlayerItself())
+        {
+            WorldPacket data(SMSG_CLEAR_COOLDOWN, 4 + 8);
+            data << uint32(spell_id);
+            data << GetGUID();
+            playerOwner->SendDirectMessage(&data);
+        }
+    }
+}
+
 bool Creature::HasSpell(uint32 spellID) const
 {
     uint8 i;
@@ -3378,8 +3409,10 @@ void Creature::AllLootRemovedFromCorpse()
         return;
     }
 
+    // the corpse keeps decayRate of the time it had left
     float decayRate = sWorld->getRate(RATE_CORPSE_DECAY_LOOTED);
-    uint32 diff = uint32((m_corpseRemoveTime - now) * decayRate);
+    time_t timeLeft = m_corpseRemoveTime - now;
+    time_t diff = time_t(timeLeft * (1.0f - decayRate));
 
     m_respawnTime -= diff;
 
@@ -3777,7 +3810,7 @@ void Creature::UpdateMovementFlags()
 
 float Creature::GetNativeObjectScale() const
 {
-    return ObjectMgr::ChooseDisplayId(GetCreatureTemplate())->DisplayScale;
+    return _nativeObjectScale;
 }
 
 void Creature::SetObjectScale(float scale)
@@ -3799,35 +3832,19 @@ void Creature::SetObjectScale(float scale)
     SetFloatValue(UNIT_FIELD_COMBATREACH, combatReach * scale);
 }
 
-void Creature::SetDisplayId(uint32 modelId, float displayScale /*= 1.f*/)
+//npcbot: send group update for bot pet
+void Creature::SetDisplayId(uint32 modelId, std::optional<float> displayScale /*= {}*/)
 {
     Unit::SetDisplayId(modelId, displayScale);
 
-    float combatReach = DEFAULT_WORLD_OBJECT_SIZE;
-
-    if (CreatureModelInfo const* minfo = sObjectMgr->GetCreatureModelInfo(modelId))
-    {
-        SetFloatValue(UNIT_FIELD_BOUNDINGRADIUS, (IsPet() ? 1.0f : minfo->bounding_radius) * GetObjectScale());
-        if (minfo->combat_reach > 0)
-            combatReach = minfo->combat_reach;
-    }
-
-    if (IsPet())
-        combatReach = DEFAULT_COMBAT_REACH;
-
-    SetObjectScale(displayScale);
-
-    SetFloatValue(UNIT_FIELD_COMBATREACH, combatReach * GetObjectScale());
-
-    //npcbot: send group update for bot pet
     if (IsNPCBotPet())
     {
         if (Creature const* botPetOwner = GetBotPetAI() ? GetBotPetAI()->GetPetsOwner() : nullptr)
             if (botPetOwner->GetBotAI()->GetGroup())
                 BotMgr::SetBotGroupUpdateFlag(botPetOwner, GROUP_UPDATE_FLAG_PET_MODEL_ID);
     }
-    //end npcbot
 }
+//end npcbot
 
 void Creature::SetDisplayFromModel(uint32 modelIdx)
 {

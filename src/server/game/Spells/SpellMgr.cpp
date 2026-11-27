@@ -774,38 +774,50 @@ void SpellMgr::GetSetOfSpellsInSpellGroup(SpellGroup group_id, std::set<uint32>&
     }
 }
 
-bool SpellMgr::AddSameEffectStackRuleSpellGroups(SpellInfo const* spellInfo, uint32 auraType, int32 amount, std::map<SpellGroup, int32>& groups) const
+bool SpellMgr::AddSameEffectStackRuleSpellGroups(SpellInfo const* spellInfo, uint32 auraType, int32 miscValue,
+    int32 amount, std::map<SpellGroup, int32>& groups) const
 {
     uint32 spellId = spellInfo->GetFirstRankSpell()->Id;
     auto spellGroupBounds = GetSpellSpellGroupMapBounds(spellId);
     // Find group with SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT if it belongs to one
+    // A spell can be in several such groups for the same auraType (one per stat, e.g. K'iru's Song of Victory),
+    // prefer the group where another spell has the same auraType and miscValue, else the first matching group
+    SpellGroup group = SPELL_GROUP_NONE;
     for (auto itr = spellGroupBounds.first; itr != spellGroupBounds.second; ++itr)
     {
-        SpellGroup group = itr->second;
-        auto found = mSpellSameEffectStack.find(group);
-        if (found != mSpellSameEffectStack.end())
-        {
-            // check auraTypes
-            if (!found->second.count(auraType))
-                continue;
+        auto found = mSpellSameEffectStack.find(itr->second);
+        // check auraTypes
+        if (found == mSpellSameEffectStack.end() || !found->second.count(auraType))
+            continue;
 
-            // Put the highest amount in the map
-            auto groupItr = groups.find(group);
-            if (groupItr == groups.end())
-                groups.emplace(group, amount);
-            else
-            {
-                int32 curr_amount = groups[group];
-                // Take absolute value because this also counts for the highest negative aura
-                if (std::abs(curr_amount) < std::abs(amount))
-                    groupItr->second = amount;
-            }
-            // return because a spell should be in only one SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT group per auraType
-            return true;
+        if (group == SPELL_GROUP_NONE)
+            group = itr->second;
+
+        auto shared = mSpellSameEffectSharedMisc.find(itr->second);
+        if (shared != mSpellSameEffectSharedMisc.end() && shared->second.count({ auraType, miscValue }))
+        {
+            group = itr->second;
+            break;
         }
     }
+
     // Not in a SPELL_GROUP_STACK_RULE_EXCLUSIVE_SAME_EFFECT group, so return false
-    return false;
+    if (group == SPELL_GROUP_NONE)
+        return false;
+
+    // Put the highest amount in the map
+    auto groupItr = groups.find(group);
+    if (groupItr == groups.end())
+        groups.emplace(group, amount);
+    else
+    {
+        int32 curr_amount = groups[group];
+        // Take absolute value because this also counts for the highest negative aura
+        if (std::abs(curr_amount) < std::abs(amount))
+            groupItr->second = amount;
+    }
+
+    return true;
 }
 
 SpellGroupStackRule SpellMgr::CheckSpellGroupStackRules(SpellInfo const* spellInfo1, SpellInfo const* spellInfo2) const
@@ -1784,6 +1796,7 @@ void SpellMgr::LoadSpellGroupStackRules()
 
     mSpellGroupStack.clear();                                  // need for reload case
     mSpellSameEffectStack.clear();
+    mSpellSameEffectSharedMisc.clear();
 
     std::vector<uint32> sameEffectGroups;
 
@@ -1922,6 +1935,34 @@ void SpellMgr::LoadSpellGroupStackRules()
             // not found either, log error
             if (!found)
                 LOG_ERROR("sql.sql", "SpellId {} listed in `spell_group` with stack rule 3 does not share aura assigned for group {}", spellId, group_id);
+        }
+
+        // a spell can be in several groups for the same aura type (one per stat, e.g. K'iru's Song of Victory),
+        // keep the (auraType, miscValue) pairs carried by at least two spells to tell which group an effect is in
+        {
+            std::map<std::pair<uint32 /*auraName*/, int32 /*miscValue*/>, uint32 /*spellCount*/> miscCount;
+            for (uint32 spellId : spellIds)
+            {
+                std::set<std::pair<uint32, int32>> spellPairs;
+                SpellInfo const* spellInfo = AssertSpellInfo(spellId);
+                for (; spellInfo; spellInfo = spellInfo->GetNextRankSpell())
+                {
+                    for (SpellEffectInfo const& spellEffectInfo : spellInfo->GetEffects())
+                    {
+                        if (!spellEffectInfo.IsAura() || !auraTypes.count(spellEffectInfo.ApplyAuraName))
+                            continue;
+
+                        spellPairs.emplace(uint32(spellEffectInfo.ApplyAuraName), spellEffectInfo.MiscValue);
+                    }
+                }
+
+                for (auto const& spellPair : spellPairs)
+                    ++miscCount[spellPair];
+            }
+
+            for (auto const& [spellPair, spellCount] : miscCount)
+                if (spellCount >= 2)
+                    mSpellSameEffectSharedMisc[SpellGroup(group_id)].insert(spellPair);
         }
 
         mSpellSameEffectStack[SpellGroup(group_id)] = auraTypes;
@@ -3279,11 +3320,12 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
                     switch (spellInfo->Id)
                     {
                         // Exceptions
+                        case 37411: // Skettis Corrupted Ghosts (Time-Lost Skettis, seen with Elixir of Shadows)
+                        case 43062: // Alpha Worg: Garwal's Invisibility
                         case 44801: // Spectral Invisibility (Kalecgos, SWP)
+                        case 45614: // Shroud of the Scourge (Blending In, Temple City of En'kilah)
                         case 46021: // Spectral Realm (SWP)
                         case 52951: // Chapel Invisibility (DK starting zone)
-                        case 43062: // Alpha Worg: Garwal's Invisibility
-                        case 45614: // Shroud of the Scourge (Blending In, Temple City of En'kilah)
                             break;
                         default:
                             spellInfo->AuraInterruptFlags |= AURA_INTERRUPT_FLAG_CAST;
@@ -3357,13 +3399,6 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
                 case SPELL_EFFECT_CREATE_ITEM:
                     spellInfo->AttributesCu |= SPELL_ATTR0_CU_NO_INITIAL_THREAT;
                     break;
-                case SPELL_EFFECT_CHARGE:
-                case SPELL_EFFECT_CHARGE_DEST:
-                case SPELL_EFFECT_JUMP:
-                case SPELL_EFFECT_JUMP_DEST:
-                case SPELL_EFFECT_LEAP_BACK:
-                    spellInfo->AttributesCu |= SPELL_ATTR0_CU_CHARGE;
-                    break;
                 case SPELL_EFFECT_PICKPOCKET:
                     spellInfo->AttributesCu |= SPELL_ATTR0_CU_PICKPOCKET;
                     break;
@@ -3405,7 +3440,7 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
         }
 
         // Xinef: spells ignoring hit result should not be binary
-        if (!spellInfo->HasAttribute(SPELL_ATTR3_ALWAYS_HIT))
+        if (!spellInfo->HasAttribute(SPELL_ATTR3_ALWAYS_HIT) && !spellInfo->HasAttribute(SPELL_ATTR0_CU_IGNORE_BINARY))
         {
             for (uint8 j = 0; j < MAX_SPELL_EFFECTS; ++j)
             {
@@ -3443,14 +3478,7 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
                                 !spellInfo->HasAttribute(SPELL_ATTR0_NO_IMMUNITIES))))
                                 continue;
 
-                            if (spellInfo->Id == 69649 || spellInfo->Id == 71056 || spellInfo->Id == 71057 || spellInfo->Id == 71058 ||
-                                spellInfo->Id == 73061 || spellInfo->Id == 73062 || spellInfo->Id == 73063 || spellInfo->Id == 73064)
-                                continue;
-
                             if (spellInfo->SpellFamilyName == SPELLFAMILY_MAGE && (spellInfo->SpellFamilyFlags[0] & 0x20)) // Frostbolt
-                                continue;
-
-                            if (spellInfo->Id == 55095) // Frost Fever
                                 continue;
 
                             if (spellInfo->SpellFamilyName == SPELLFAMILY_WARLOCK &&

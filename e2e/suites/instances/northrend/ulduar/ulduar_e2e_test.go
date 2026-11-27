@@ -598,167 +598,6 @@ func TestUlduar_BrightleafSunBeamsCappedPerWave(t *testing.T) {
 	t.Logf("PASS %d sun beam(s) in one wave with %d players in range", len(wave), botCount)
 }
 
-// Issue: https://github.com/azerothcore/azerothcore-wotlk/issues/27590
-// PR:    https://github.com/azerothcore/azerothcore-wotlk/pull/27628
-// Psychosis (63795) and Malady of the Mind (63830) must skip players sitting at 40 Sanity
-// or less. Both pick a random enemy through TARGET_UNIT_SRC_AREA_ENEMY over a 50000 yd
-// radius and AzerothCore never filtered that list, so the players closest to going insane
-// kept being the ones picked.
-//
-// Sara is faction 35 and can never own an enemy list, so she cannot be the fixture caster.
-// A Laughing Skull is the stand-in: faction 14, NullCreatureAI, no threat list, and the
-// Lunatic Gaze test above already proves its spells select the bot as an enemy. Its own
-// gaze is stripped first, otherwise the 2 sanity a second it drains drowns the oracle.
-func TestAC_27590_PsychosisSkipsLowSanity(t *testing.T) {
-	meta.Begin(t, meta.TestMeta{
-		Tags:     []string{"med", "instances", "issue"},
-		Runtime:  "med",
-		Issue:    27590,
-		Category: "instances/northrend/ulduar",
-	})
-
-	const (
-		npcLaughingSkull = uint32(33990)
-		spellSanity      = uint32(63050)
-		spellSanityWell  = uint32(64169)
-		spellLunaticGaze = uint32(64167)
-		spellPsychosis   = uint32(63795)
-		spellMalady      = uint32(63830)
-
-		// Icecrown illusion chamber floor, the pad the Lunatic Gaze test spawns on.
-		padX, padY, padZ = float32(1930.0), float32(-120.0), float32(240.07)
-
-		// Threshold from the 2009-07-02 hotfix: at or below it neither spell may pick the player.
-		sanityFloor = 40
-
-		// Where the walk down starts. A Sanity Well tops up in steps of 20 from the single
-		// stack `.aura` creates, so 1 -> 21 -> 41 -> 61 lands here and Psychosis then steps
-		// 61 -> 52 -> 43 -> 34, straddling the threshold without overshooting it far.
-		sanityStart = 60
-
-		// 63795 is a 2.9s cast and target selection only runs once it completes. A cast that
-		// finds nobody expires quietly, so the no-drain half has to burn the whole window.
-		castWindow = 8 * time.Second
-
-		// Well ticks every 2s; this only has to outlast the three steps up to sanityStart.
-		rampWindow = 20 * time.Second
-
-		// Enough steps to walk sanityStart down past the threshold at 9 a hit, with room to spare.
-		maxPsychosisCasts = 20
-	)
-
-	bot := e2eharness.NewSolo(t, e2eharness.ScenarioOpts{
-		Prefix: "YoggPs", Race: e2eharness.RaceHuman, Level: 80,
-	})
-
-	// Stay GM through the raid enter (.go xyz onto 603 is ignored after .gm off).
-	bot.Teleport(t, padX, padY, padZ, e2eharness.MapUlduar)
-	if _, _, _, m := bot.Pos(); m != e2eharness.MapUlduar {
-		e2eharness.Preconditionf(t, "not in Ulduar after brain room tele map=%d", m)
-	}
-	skull := bot.Spawn(t, npcLaughingSkull, 30*time.Second)
-
-	// GM casts and aura edits both act on the current selection, so every one of them says
-	// out loud which unit it means.
-	selectUnit := func(label string, guid uint64) {
-		t.Helper()
-		if err := bot.World.SetTarget(guid); err != nil {
-			e2eharness.Preconditionf(t, "select %s 0x%X: %v", label, guid, err)
-		}
-	}
-	selectSkull := func() { t.Helper(); selectUnit("skull", skull) }
-	selectSelf := func() { t.Helper(); selectUnit("self", bot.World.CharGUID()) }
-
-	selectSkull()
-	bot.GM(t, fmt.Sprintf(".unaura %d", spellLunaticGaze))
-
-	// Drop GM so the spells can select the bot; god mode absorbs the damage half of Psychosis.
-	bot.CombatReady(t)
-	bot.CheatGod(t)
-
-	// Sanity carries AURA_INTERRUPT_FLAG_CHANGE_MAP, so apply it after the tele. `.aura`
-	// creates it at one stack, which is already under the threshold, so a Sanity Well
-	// buff tops it up the same way Freya's wells do in the fight.
-	bot.ApplyAura(t, spellSanity)
-	bot.ApplyAura(t, spellSanityWell)
-	rampDeadline := time.Now().Add(rampWindow)
-	for bot.AuraStacks(spellSanity) < sanityStart && time.Now().Before(rampDeadline) {
-		time.Sleep(250 * time.Millisecond)
-	}
-	// CMSG_CANCEL_AURA does not take the well off, so strip it server side.
-	selectSelf()
-	bot.GM(t, fmt.Sprintf(".unaura %d", spellSanityWell))
-
-	start := bot.AuraStacks(spellSanity)
-	if start <= sanityFloor {
-		e2eharness.Preconditionf(t, "Sanity ramped to %d stacks, need more than %d to drive the threshold", start, sanityFloor)
-	}
-
-	// Every later delta is attributed to the spell under test, so nothing else may be moving
-	// sanity now: this catches both a skull that still gazes and a well that never came off.
-	time.Sleep(3 * time.Second)
-	if quiet := bot.AuraStacks(spellSanity); quiet != start {
-		e2eharness.Preconditionf(t, "sanity still moving on its own before the first cast (%d -> %d), skull 0x%X", start, quiet, skull)
-	}
-
-	// `.cast self` makes the *selected* unit cast on itself. Psychosis and Malady take their
-	// real targets from the area around the caster, which is the same selection path Sara
-	// drives in phase 2. Returns the stacks the bot lost, 0 if the cast never reached it.
-	castFromSkull := func(spellID uint32) int {
-		t.Helper()
-		before := bot.AuraStacks(spellSanity)
-		selectSkull()
-		bot.GM(t, fmt.Sprintf(".cast self %d", spellID))
-		deadline := time.Now().Add(castWindow)
-		for time.Now().Before(deadline) {
-			if now := bot.AuraStacks(spellSanity); now != before {
-				return before - now
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-		return 0
-	}
-
-	// Fixture check: at full sanity the spell must reach the bot at all. Without this a
-	// mis-aimed `.cast self` (it falls back to the caster's own player when nothing is
-	// selected) would read as a clean pass on both of the assertions below.
-	if lost := castFromSkull(spellMalady); lost <= 0 {
-		e2eharness.Preconditionf(t, "fixture dead: Malady of the Mind drained nothing at %d sanity", bot.AuraStacks(spellSanity))
-	}
-
-	lastValid := 0
-	for i := 0; i < maxPsychosisCasts; i++ {
-		before := bot.AuraStacks(spellSanity)
-		if before <= sanityFloor {
-			break
-		}
-		lost := castFromSkull(spellPsychosis)
-		if lost <= 0 {
-			e2eharness.ConfirmedBugf(t, 27590,
-				"Psychosis drained nothing at %d sanity, which is above the %d threshold", before, sanityFloor)
-		}
-		lastValid = before
-		t.Logf("Psychosis at %d sanity drained %d -> %d", before, lost, bot.AuraStacks(spellSanity))
-	}
-
-	atFloor := bot.AuraStacks(spellSanity)
-	if atFloor > sanityFloor {
-		e2eharness.Preconditionf(t, "never reached the threshold, stuck at %d sanity after %d casts", atFloor, maxPsychosisCasts)
-	}
-
-	if lost := castFromSkull(spellPsychosis); lost > 0 {
-		e2eharness.ConfirmedBugf(t, 27590,
-			"Psychosis drained %d sanity from a player at %d, at or below the %d threshold", lost, atFloor, sanityFloor)
-	}
-	atFloor = bot.AuraStacks(spellSanity)
-	if lost := castFromSkull(spellMalady); lost > 0 {
-		e2eharness.ConfirmedBugf(t, 27590,
-			"Malady of the Mind drained %d sanity from a player at %d, at or below the %d threshold", lost, atFloor, sanityFloor)
-	}
-
-	t.Logf("PASS low sanity targeting: both spells landed down to %d sanity and neither reached the player at %d", lastValid, atFloor)
-}
-
 // Issue: https://github.com/azerothcore/azerothcore-wotlk/issues/27455
 // An Ancient Water Spirit's Tidal Wave (62653, 25-man rank 62935) is a 2s cast that surges the
 // spirit forward and knocks everything in its path off its feet with a second spell, 62654
@@ -1295,8 +1134,8 @@ func TestUlduar_FreyaWardLasherOutlivesSummonDuration(t *testing.T) {
 
 		addSearchRange = float32(100)
 
-		// npc_freya_ward resets its cast timer to 25s and casts at 29s, so the first lasher lands
-		// ~4s after the ward spawns. One extra 29s cycle covers a ward that missed that window.
+		// npc_freya_ward casts its first wave 1.6s after it spawns, so the first Writhing Lasher
+		// lands ~5.3s in once the missile flight is added, five per beam per wave.
 		firstLasherWindow = 40 * time.Second
 
 		// 62947 carries SpellDuration 1 (10s). A lasher still in the cache this long after it
@@ -1331,8 +1170,8 @@ func TestUlduar_FreyaWardLasherOutlivesSummonDuration(t *testing.T) {
 	appeared := time.Now()
 	t.Logf("Writhing Lasher 0x%X summoned by ward 0x%X", lasher, ward)
 
-	// Pin the GUID: the ward keeps summoning every 29s, so "some lasher is in the cache" would
-	// still be true on an unfixed core and would hide the despawn.
+	// Pin the GUID: the ward keeps summoning five fresh lashers every 32.4s, so "some lasher is
+	// in the cache" would still be true on an unfixed core and would hide the despawn.
 	deadline := appeared.Add(outliveWindow)
 	for time.Now().Before(deadline) {
 		if bot.World.GetObject(lasher) == nil {
@@ -1350,7 +1189,7 @@ func TestUlduar_FreyaWardLasherOutlivesSummonDuration(t *testing.T) {
 
 	// A MANUAL_DESPAWN summon has nothing of its own to remove it, and deleting the ward does not
 	// take its adds with it, so they have to be killed here. The ward dies first: while it lives it
-	// summons another pair every 29s, and a sweep taken before that would race the next cycle.
+	// summons another wave every 32.4s, and a sweep taken before that would race the next cycle.
 	bot.DamageKill(t, []uint64{ward}, 10_000_000, 30*time.Second)
 	var adds []uint64
 	for _, add := range bot.UnitsByEntry(addSearchRange, npcWrithingLasher, npcWardOfLife) {

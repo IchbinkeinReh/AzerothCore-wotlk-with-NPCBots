@@ -505,10 +505,28 @@ void Pet::SavePetToDB(PetSaveMode mode)
     if (!GetOwnerGUID().IsPlayer())
         return;
 
-    // dont allow to save pet when it is loaded, possibly bugs action bar!, save only fully controlled creature
+    // save only fully controlled creature
     Player* owner = GetOwner()->ToPlayer();
-    if (!owner || m_loading || !GetEntry() || !isControlled())
+    if (!owner || !GetEntry() || !isControlled())
         return;
+
+    // Spells and auras are not loaded yet and saving them would wipe the stored ones,
+    // but the caller still updates the pet stable, so a slot change or deletion must reach the DB.
+    if (m_loading)
+    {
+        if (mode == PET_SAVE_AS_DELETED)
+            DeleteFromDB(m_charmInfo->GetPetNumber());
+        else if (mode > PET_SAVE_AS_CURRENT)
+        {
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_PET_SLOT_BY_ID);
+            stmt->SetData(0, uint8(mode));
+            stmt->SetData(1, GetOwnerGUID().GetCounter());
+            stmt->SetData(2, m_charmInfo->GetPetNumber());
+            CharacterDatabase.Execute(stmt);
+        }
+
+        return;
+    }
 
     // not save pet as current if another pet temporary unsummoned
     if (mode == PET_SAVE_AS_CURRENT && owner->GetTemporaryUnsummonedPetNumber() &&
@@ -555,6 +573,16 @@ void Pet::SavePetToDB(PetSaveMode mode)
             stmt->SetData(0, ownerLowGUID);
             stmt->SetData(1, uint8(PET_SAVE_AS_CURRENT));
             stmt->SetData(2, uint8(PET_SAVE_LAST_STABLE_SLOT));
+            trans->Append(stmt);
+        }
+        // other pets keep their rows when unsummoned, so only move them out of the current slot
+        else if (mode == PET_SAVE_AS_CURRENT)
+        {
+            stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_PET_SLOT_BY_SLOT_EXCLUDE_ID);
+            stmt->SetData(0, uint8(PET_SAVE_NOT_IN_SLOT));
+            stmt->SetData(1, ownerLowGUID);
+            stmt->SetData(2, uint8(PET_SAVE_AS_CURRENT));
+            stmt->SetData(3, m_charmInfo->GetPetNumber());
             trans->Append(stmt);
         }
 
@@ -1419,8 +1447,8 @@ bool Guardian::InitStatsForLevel(uint8 petlevel)
                 if (aur->GetEffect(0))
                     aur->GetEffect(0)->SetAmount(-aurEff->GetSpellInfo()->Effects[EFFECT_2].CalcValue());
 
-        // Added to perm ghoul by default
-        if (!IsPet())
+        // only the permanent ghoul is a pet
+        if (IsPet())
         {
             AddAura(SPELL_DK_PET_SCALING_01, this);
             AddAura(SPELL_DK_PET_SCALING_02, this);
@@ -1810,7 +1838,7 @@ bool Pet::addSpell(uint32 spellId, ActiveStates active /*= ACT_DECIDE*/, PetSpel
     if (active == ACT_DECIDE)                               // active was not used before, so we save it's autocast/passive state here
     {
         if (spellInfo->IsAutocastable())
-            newspell.active = ACT_DISABLED;
+            newspell.active = ACT_ENABLED;
         else
             newspell.active = ACT_PASSIVE;
     }
@@ -1872,7 +1900,7 @@ bool Pet::addSpell(uint32 spellId, ActiveStates active /*= ACT_DECIDE*/, PetSpel
     if (spellInfo->IsPassive())
         CastSpell(this, spellId, true);
     else
-        m_charmInfo->AddSpellToActionBar(spellInfo);
+        m_charmInfo->AddSpellToActionBar(spellInfo, newspell.active);
 
     // unapply aura stats if dont meet requirements
     if (Aura* aura = GetAura(spellId))
@@ -2410,7 +2438,7 @@ void Pet::SynchronizeLevelWithOwner()
     }
 }
 
-void Pet::SetDisplayId(uint32 modelId, float displayScale /*= 1.f*/)
+void Pet::SetDisplayId(uint32 modelId, std::optional<float> displayScale /*= {}*/)
 {
     Guardian::SetDisplayId(modelId, displayScale);
 
@@ -2447,22 +2475,6 @@ void Pet::ClearCastWhenWillAvailable()
     m_tempoldTarget = ObjectGuid::Empty;
 }
 
-void Pet::RemoveSpellCooldown(uint32 spell_id, bool update /* = false */)
-{
-    m_CreatureSpellCooldowns.erase(spell_id);
-
-    if (update)
-    {
-        if (Player* playerOwner = GetCharmerOrOwnerPlayerOrPlayerItself())
-        {
-            WorldPacket data(SMSG_CLEAR_COOLDOWN, 4 + 8);
-            data << uint32(spell_id);
-            data << GetGUID();
-            playerOwner->SendDirectMessage(&data);
-        }
-    }
-}
-
 void Pet::FillPetInfo(PetStable::PetInfo* petInfo) const
 {
     petInfo->PetNumber = m_charmInfo->GetPetNumber();
@@ -2487,57 +2499,6 @@ Player* Pet::GetOwner() const
     return m_owner;
 }
 
-float Pet::GetNativeObjectScale() const
-{
-    uint8 ctFamily = GetCreatureTemplate()->family;
-
-    CreatureFamilyEntry const* creatureFamily = sCreatureFamilyStore.LookupEntry(ctFamily);
-    if (creatureFamily && creatureFamily->minScale > 0.0f && getPetType() & HUNTER_PET)
-    {
-        float minScaleLevel = creatureFamily->minScaleLevel;
-        uint8 level = GetLevel();
-
-        float minLevelScaleMod = level >= minScaleLevel ? (level / minScaleLevel) : 0.0f;
-        float maxScaleMod = creatureFamily->maxScaleLevel - minScaleLevel;
-
-        if (minLevelScaleMod > maxScaleMod)
-            minLevelScaleMod = maxScaleMod;
-
-        float scaleMod = creatureFamily->maxScaleLevel != minScaleLevel ? minLevelScaleMod / maxScaleMod : 0.f;
-
-        float maxScale = creatureFamily->maxScale;
-
-        // override maxScale
-        switch (ctFamily)
-        {
-            case CREATURE_FAMILY_CHIMAERA:
-            case CREATURE_FAMILY_CORE_HOUND:
-            case CREATURE_FAMILY_CRAB:
-            case CREATURE_FAMILY_DEVILSAUR:
-            case CREATURE_FAMILY_NETHER_RAY:
-            case CREATURE_FAMILY_RHINO:
-            case CREATURE_FAMILY_SPIDER:
-            case CREATURE_FAMILY_TURTLE:
-            case CREATURE_FAMILY_WARP_STALKER:
-            case CREATURE_FAMILY_WASP:
-            case CREATURE_FAMILY_WIND_SERPENT:
-                maxScale = 1.0f;
-                break;
-            default:
-                break;
-        }
-
-        float scale = (maxScale - creatureFamily->minScale) * scaleMod + creatureFamily->minScale;
-
-        scale = std::min(scale, maxScale);
-
-        return scale;
-    }
-
-    // take value for non-hunter pets from DB
-    return Guardian::GetNativeObjectScale();
-}
-
 std::string Pet::GenerateActionBarData() const
 {
     std::ostringstream oss;
@@ -2559,4 +2520,127 @@ std::string Pet::GetDebugInfo() const
         << "PetType: " << std::to_string(getPetType()) << " "
         << "PetNumber: " << m_charmInfo->GetPetNumber();
     return sstr.str();
+}
+
+void PetAutocastPreferences::Load(PreparedQueryResult result)
+{
+    _states.clear();
+
+    if (!result)
+        return;
+
+    do
+    {
+        Field* fields = result->Fetch();
+        uint32 entry = fields[0].Get<uint32>();
+        uint32 spell = fields[1].Get<uint32>();
+        bool autocast = fields[2].Get<uint8>() != 0;
+
+        _states.push_back({ entry, spell, autocast });
+    } while (result->NextRow());
+}
+
+void PetAutocastPreferences::Set(ObjectGuid::LowType ownerGuid, uint32 entry, uint32 spell, bool autocast)
+{
+    auto it = std::find_if(_states.begin(), _states.end(), [entry, spell](PetAutocastState const& state)
+    {
+        return state.Entry == entry && state.Spell == spell;
+    });
+
+    if (it == _states.end())
+        _states.push_back({ entry, spell, autocast });
+    else if (it->Autocast == autocast)
+        return;                                             // already stored, so spare the write
+    else
+        it->Autocast = autocast;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_PET_AUTOCAST);
+    stmt->SetData(0, ownerGuid);
+    stmt->SetData(1, entry);
+    stmt->SetData(2, spell);
+    stmt->SetData(3, uint8(autocast ? 1 : 0));
+    CharacterDatabase.Execute(stmt);
+}
+
+bool SummonSavesPetAutocast(Unit const* summon)
+{
+    // a guardian keeps the SummonProperties row it was created with
+    if (TempSummon const* tempSummon = summon->ToTempSummon())
+        if (tempSummon->m_Properties)
+            return (tempSummon->m_Properties->Flags & SUMMON_PROP_FLAG_SAVE_PET_AUTOCAST) != 0;
+
+    // a Pet is built with no properties: fall back to the summon spell it records
+    SpellInfo const* summonSpell = sSpellMgr->GetSpellInfo(summon->GetUInt32Value(UNIT_CREATED_BY_SPELL));
+    if (!summonSpell)
+        return false;
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        SpellEffectInfo const& effect = summonSpell->Effects[i];
+        if (!effect.IsEffect(SPELL_EFFECT_SUMMON) && !effect.IsEffect(SPELL_EFFECT_SUMMON_PET))
+            continue;
+
+        SummonPropertiesEntry const* properties = sSummonPropertiesStore.LookupEntry(uint32(effect.MiscValueB));
+        if (properties && (properties->Flags & SUMMON_PROP_FLAG_SAVE_PET_AUTOCAST))
+            return true;
+    }
+
+    return false;
+}
+
+void ApplySavedPetAutocast(Player* owner, Unit* summon)
+{
+    if (!owner || !summon || !SummonSavesPetAutocast(summon))
+        return;
+
+    std::vector<PetAutocastState> const& states = owner->GetPetAutocastPreferences().GetStates();
+    CharmInfo* charmInfo = summon->GetCharmInfo();
+    if (states.empty() || !charmInfo)
+        return;
+
+    for (PetAutocastState const& state : states)
+    {
+        if (state.Entry != summon->GetEntry())
+            continue;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(state.Spell);
+        if (!spellInfo)
+            continue;
+
+        if (Pet* pet = summon->ToPet())
+            pet->ToggleAutocast(spellInfo, state.Autocast);                 // keeps m_autospells and m_spells in sync
+        else
+            charmInfo->ToggleCreatureAutocast(spellInfo, state.Autocast);   // drives the guardian's autocast
+
+        charmInfo->SetSpellAutocast(spellInfo, state.Autocast);             // the action bar the client displays
+    }
+}
+
+void SavePetAutocast(Player* owner, Unit* summon)
+{
+    if (!owner || !summon || !SummonSavesPetAutocast(summon))
+        return;
+
+    // a Pet keeps its state in pet_spell.active, which its own row already saves
+    if (summon->ToPet())
+        return;
+
+    CharmInfo* charmInfo = summon->GetCharmInfo();
+    if (!charmInfo)
+        return;
+
+    for (uint8 i = 0; i < MAX_SPELL_CHARM; ++i)
+    {
+        CharmSpellInfo const* charmSpell = charmInfo->GetCharmSpell(i);
+        uint32 spellId = charmSpell->GetAction();
+        if (!spellId)
+            continue;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo || !spellInfo->IsAutocastable())
+            continue;
+
+        owner->GetPetAutocastPreferences().Set(owner->GetGUID().GetCounter(), summon->GetEntry(), spellId,
+                                               charmSpell->GetType() == ACT_ENABLED);
+    }
 }

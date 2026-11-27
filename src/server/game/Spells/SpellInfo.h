@@ -183,7 +183,7 @@ enum SpellCustomAttributes
     SPELL_ATTR0_CU_DONT_BREAK_STEALTH            = 0x00000040,
     SPELL_ATTR0_CU_NO_PVP_FLAG                   = 0x00000080,
     SPELL_ATTR0_CU_DIRECT_DAMAGE                 = 0x00000100,
-    SPELL_ATTR0_CU_CHARGE                        = 0x00000200,
+    SPELL_ATTR0_CU_IGNORE_BINARY                 = 0x00000200,
     SPELL_ATTR0_CU_PICKPOCKET                    = 0x00000400,
     SPELL_ATTR0_CU_IGNORE_EVADE                  = 0x00000800,
     SPELL_ATTR0_CU_NEGATIVE_EFF0                 = 0x00001000,
@@ -516,7 +516,8 @@ public:
 
     SpellCastResult CheckShapeshift(uint32 form) const;
     SpellCastResult CheckLocation(uint32 map_id, uint32 zone_id, uint32 area_id, Player* player = nullptr, bool strict = true) const;
-    SpellCastResult CheckTarget(WorldObject const* caster, WorldObject const* target, bool implicit = true) const;
+    SpellCastResult CheckTarget(WorldObject const* caster, WorldObject const* target, bool implicit = true,
+        Unit const* originalCaster = nullptr) const;
     SpellCastResult CheckExplicitTarget(WorldObject const* caster, WorldObject const* target, Item const* itemTarget = nullptr) const;
     bool CheckTargetCreatureType(Unit const* target) const;
 

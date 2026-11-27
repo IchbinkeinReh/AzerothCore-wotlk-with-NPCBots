@@ -41,6 +41,7 @@
 #include "ObjectAccessor.h"
 #include "Pet.h"
 #include "Player.h"
+#include "PlayerCommand.h"
 #include "PoolMgr.h"
 #include "RBAC.h"
 #include "Realm.h"
@@ -109,7 +110,6 @@ public:
             { "unaura",            HandleUnAuraCommand,            rbac::RBAC_PERM_COMMAND_UNAURA,            Console::No  },
             { "appear",            HandleAppearCommand,            rbac::RBAC_PERM_COMMAND_APPEAR,            Console::No  },
             { "summon",            HandleSummonCommand,            rbac::RBAC_PERM_COMMAND_SUMMON,            Console::No  },
-            { "groupsummon",       HandleGroupSummonCommand,       rbac::RBAC_PERM_COMMAND_GROUP_SUMMON,      Console::No  },
             { "commands",          HandleCommandsCommand,          rbac::RBAC_PERM_COMMAND_COMMANDS,          Console::Yes },
             { "die",               HandleDieCommand,               rbac::RBAC_PERM_COMMAND_DIE,               Console::No  },
             { "revive",            HandleReviveCommand,            rbac::RBAC_PERM_COMMAND_REVIVE,            Console::Yes },
@@ -951,80 +951,13 @@ public:
 
         if (target->IsConnected())
         {
-            auto targetPlayer = target->GetConnectedPlayer();
-
-            // check online security
-            if (handler->HasLowerSecurity(targetPlayer))
+            if (_player->GetMap()->IsBattlegroundOrArena())
             {
+                handler->SendErrorMessage(LANG_CANNOT_SUMMON_TO_BG);
                 return false;
             }
 
-            if (targetPlayer->IsBeingTeleported())
-            {
-                handler->SendErrorMessage(LANG_IS_TELEPORTED, nameLink);
-                return false;
-            }
-
-            Map* map = handler->GetSession()->GetPlayer()->GetMap();
-
-            if (map->IsBattlegroundOrArena())
-            {
-                handler->SendErrorMessage("Can't summon to a battleground!");
-                return false;
-            }
-            else if (map->IsDungeon())
-            {
-                // Allow GM to summon players or only other GM accounts inside instances.
-                if (!sWorld->getBoolConfig(CONFIG_INSTANCE_GMSUMMON_PLAYER))
-                {
-                    // pussywizard: prevent unbinding normal player's perm bind by just summoning him >_>
-                    if (!targetPlayer->GetSession()->GetSecurity())
-                    {
-                        handler->SendErrorMessage("Only GMs can be summoned to an instance!");
-                        return false;
-                    }
-                }
-
-                Map* destMap = targetPlayer->GetMap();
-
-                if (destMap->Instanceable() && destMap->GetInstanceId() != map->GetInstanceId())
-                {
-                    sInstanceSaveMgr->PlayerUnbindInstance(target->GetGUID(), map->GetInstanceId(), targetPlayer->GetDungeonDifficulty(), true, targetPlayer);
-                }
-
-                // we are in an instance, and can only summon players in our group with us as leader
-                if (!handler->GetSession()->GetPlayer()->GetGroup() || !targetPlayer->GetGroup() ||
-                        (targetPlayer->GetGroup()->GetLeaderGUID() != handler->GetSession()->GetPlayer()->GetGUID()) ||
-                        (handler->GetSession()->GetPlayer()->GetGroup()->GetLeaderGUID() != handler->GetSession()->GetPlayer()->GetGUID()))
-                    // the last check is a bit excessive, but let it be, just in case
-                {
-                    handler->SendErrorMessage(LANG_CANNOT_SUMMON_TO_INST, nameLink);
-                    return false;
-                }
-            }
-
-            handler->PSendSysMessage(LANG_SUMMONING, nameLink, "");
-            if (handler->needReportToTarget(targetPlayer))
-            {
-                ChatHandler(targetPlayer->GetSession()).PSendSysMessage(LANG_SUMMONED_BY, handler->playerLink(_player->GetName()));
-            }
-
-            // stop flight if need
-            if (targetPlayer->IsInFlight())
-            {
-                targetPlayer->GetMotionMaster()->MovementExpired();
-                targetPlayer->CleanupAfterTaxiFlight();
-            }
-            // save only in non-flight case
-            else
-            {
-                targetPlayer->SaveRecallPosition();
-            }
-
-            // before GM
-            float x, y, z;
-            handler->GetSession()->GetPlayer()->GetClosePoint(x, y, z, targetPlayer->GetObjectSize());
-            targetPlayer->TeleportTo(handler->GetSession()->GetPlayer()->GetMapId(), x, y, z, targetPlayer->GetOrientation(), 0, handler->GetSession()->GetPlayer());
+            return Acore::PlayerCommand::SummonOnlinePlayer(handler, target->GetConnectedPlayer());
         }
         else
         {
@@ -1044,112 +977,6 @@ public:
                                      handler->GetSession()->GetPlayer()->GetOrientation(),
                                      handler->GetSession()->GetPlayer()->GetZoneId(),
                                      target->GetGUID());
-        }
-
-        return true;
-    }
-
-    // Summon group of player
-    static bool HandleGroupSummonCommand(ChatHandler* handler, Optional<PlayerIdentifier> target)
-    {
-        if (!target)
-        {
-            target = PlayerIdentifier::FromTargetOrSelf(handler);
-        }
-
-        if (!target || !target->IsConnected())
-        {
-            return false;
-        }
-
-        // check online security
-        if (handler->HasLowerSecurity(target->GetConnectedPlayer()))
-        {
-            return false;
-        }
-
-        auto targetPlayer = target->GetConnectedPlayer();
-
-        Group* group = targetPlayer->GetGroup();
-
-        std::string nameLink = handler->playerLink(target->GetName());
-
-        if (!group)
-        {
-            handler->SendErrorMessage(LANG_NOT_IN_GROUP, nameLink);
-            return false;
-        }
-
-        Map* gmMap = handler->GetSession()->GetPlayer()->GetMap();
-        bool toInstance = gmMap->Instanceable();
-
-        // we are in instance, and can summon only player in our group with us as lead
-        if (toInstance && (
-                    !handler->GetSession()->GetPlayer()->GetGroup() || (group->GetLeaderGUID() != handler->GetSession()->GetPlayer()->GetGUID()) ||
-                    (handler->GetSession()->GetPlayer()->GetGroup()->GetLeaderGUID() != handler->GetSession()->GetPlayer()->GetGUID())))
-            // the last check is a bit excessive, but let it be, just in case
-        {
-            handler->SendErrorMessage(LANG_CANNOT_SUMMON_TO_INST);
-            return false;
-        }
-
-        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
-        {
-            Player* player = itr->GetSource();
-
-            if (!player || player == handler->GetSession()->GetPlayer() || !player->GetSession())
-            {
-                continue;
-            }
-
-            // check online security
-            if (handler->HasLowerSecurity(player))
-            {
-                return false;
-            }
-
-            std::string plNameLink = handler->GetNameLink(player);
-
-            if (player->IsBeingTeleported())
-            {
-                handler->SendErrorMessage(LANG_IS_TELEPORTED, plNameLink);
-                return false;
-            }
-
-            if (toInstance)
-            {
-                Map* playerMap = player->GetMap();
-
-                if (playerMap->Instanceable() && playerMap->GetInstanceId() != gmMap->GetInstanceId())
-                {
-                    // cannot summon from instance to instance
-                    handler->SendErrorMessage(LANG_CANNOT_SUMMON_TO_INST, plNameLink);
-                    return false;
-                }
-            }
-
-            handler->PSendSysMessage(LANG_SUMMONING, plNameLink, "");
-            if (handler->needReportToTarget(player))
-            {
-                ChatHandler(player->GetSession()).PSendSysMessage(LANG_SUMMONED_BY, handler->GetNameLink());
-            }
-
-            // stop flight if need
-            if (player->IsInFlight())
-            {
-                player->GetMotionMaster()->MovementExpired();
-                player->CleanupAfterTaxiFlight();
-            }
-            // save only in non-flight case
-            else
-            {
-                player->SaveRecallPosition();
-            }
-
-            // before GM
-            float x, y, z;
-            handler->GetSession()->GetPlayer()->GetClosePoint(x, y, z, player->GetObjectSize());
-            player->TeleportTo(handler->GetSession()->GetPlayer()->GetMapId(), x, y, z, player->GetOrientation(), 0, handler->GetSession()->GetPlayer());
         }
 
         return true;
@@ -1721,6 +1548,16 @@ public:
         return true;
     }
 
+    static void SendRemoveItemResult(ChatHandler* handler, uint32 itemId, uint32 removed, std::string const& nameLink, ObjectGuid::LowType guidLow, bool online, uint32 countLeft)
+    {
+        std::string status = handler->GetAcoreString(online ? LANG_CHARACTER_ONLINE : LANG_CHARACTER_OFFLINE);
+
+        if (countLeft)
+            handler->PSendSysMessage(LANG_REMOVEITEM, itemId, removed, nameLink, guidLow, status, countLeft);
+        else
+            handler->PSendSysMessage(LANG_REMOVEITEM_NONE_LEFT, itemId, removed, nameLink, guidLow, status);
+    }
+
     static bool HandleAddItemCommand(ChatHandler* handler, Optional<PlayerIdentifier> player, ItemTemplate const* itemTemplate, Optional<int32> _count)
     {
         if (!sObjectMgr->GetItemTemplate(itemTemplate->ItemId))
@@ -1771,9 +1608,12 @@ public:
                     }
                 }
 
-                // output successful amount of destroyed items
+                uint32 countBefore = playerTarget->GetItemCount(itemId, true);
                 playerTarget->DestroyItemCount(itemId, removeCount, true, false);
-                handler->PSendSysMessage(LANG_REMOVEITEM, itemId, removeCount, handler->GetNameLink(playerTarget));
+                uint32 countAfter = playerTarget->GetItemCount(itemId, true);
+
+                SendRemoveItemResult(handler, itemId, countBefore - countAfter, handler->GetNameLink(playerTarget),
+                    playerTarget->GetGUID().GetCounter(), true, countAfter);
                 return true;
             }
 
@@ -1789,18 +1629,26 @@ public:
             PreparedQueryResult result = CharacterDatabase.Query(stmt);
 
             std::vector<std::pair<ObjectGuid::LowType, uint32>> stacks;
-            uint32 totalCount = 0;
+            uint32 removableCount = 0;
+            uint32 ownedCount = 0;
             if (result)
             {
                 do
                 {
                     Field* fields = result->Fetch();
-                    stacks.emplace_back(fields[0].Get<uint32>(), fields[1].Get<uint32>());
-                    totalCount += fields[1].Get<uint32>();
+                    uint32 stackCount = fields[1].Get<uint32>();
+                    ownedCount += stackCount;
+
+                    // Bags that still hold items are never removed
+                    if (fields[2].Get<uint64>())
+                        continue;
+
+                    stacks.emplace_back(fields[0].Get<uint32>(), stackCount);
+                    removableCount += stackCount;
                 } while (result->NextRow());
             }
 
-            if (!totalCount)
+            if (!removableCount)
             {
                 handler->SendErrorMessage(LANG_REMOVEITEM_FAILURE, nameLink, itemId);
                 return false;
@@ -1808,7 +1656,7 @@ public:
 
             // Only have scam check on player accounts
             uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(player->GetGUID());
-            if (AccountMgr::GetSecurity(accountId, realm.Id.Realm) == SEC_PLAYER && totalCount < removeCount)
+            if (AccountMgr::GetSecurity(accountId, realm.Id.Realm) == SEC_PLAYER && removableCount < removeCount)
             {
                 handler->SendErrorMessage(LANG_REMOVEITEM_ERROR, nameLink, itemId);
                 return false;
@@ -1854,7 +1702,8 @@ public:
             }
             CharacterDatabase.CommitTransaction(trans);
 
-            handler->PSendSysMessage(LANG_REMOVEITEM, itemId, removeCount - remaining, nameLink);
+            uint32 removed = removeCount - remaining;
+            SendRemoveItemResult(handler, itemId, removed, nameLink, player->GetGUID().GetCounter(), false, ownedCount - removed);
             return true;
         }
 
@@ -2563,10 +2412,7 @@ public:
         }
         // Also trigger via respawn time queue for fully-removed spawns
         if (map->GetCreatureRespawnTime(spawnId) > 0)
-        {
-            time_t now = GameTime::GetGameTime().count();
-            map->SaveCreatureRespawnTime(spawnId, now);
-        }
+            map->ForceCreatureRespawn(spawnId);
         handler->PSendSysMessage(LANG_RESPAWN_GUID_CREATURE_QUEUED, spawnId, creData->id);
         return true;
     }
@@ -2658,7 +2504,6 @@ public:
             return false;
         }
 
-        time_t now = GameTime::GetGameTime().count();
         uint32 count = 0;
 
         // Phase 1: respawn dead corpses that are still tracked in the spawn-id store.
@@ -2691,7 +2536,7 @@ public:
         }
         for (ObjectGuid::LowType spawnId : toRespawn)
         {
-            map->SaveCreatureRespawnTime(spawnId, now);
+            map->ForceCreatureRespawn(spawnId);
             ++count;
         }
 
@@ -2883,12 +2728,11 @@ public:
         Player* target = player->GetConnectedPlayer();
         uint32 accountId = target ? target->GetSession()->GetAccountId() : sCharacterCache->GetCharacterAccountIdByGuid(player->GetGUID());
 
-        // find only player from same account if any
-        if (!target)
-            if (WorldSession* session = sWorldSessionMgr->FindSession(accountId))
-            {
-                target = session->GetPlayer();
-            }
+        // The account may be online on another character or idle at character select, where
+        // the session has no player but keeps its mute time for every character it logs in.
+        WorldSession* session = target ? target->GetSession() : sWorldSessionMgr->FindSession(accountId);
+        if (!target && session)
+            target = session->GetPlayer();
 
         // must have strong lesser security level
         if (handler->HasLowerSecurity(target, player->GetGUID(), true))
@@ -2919,11 +2763,11 @@ public:
             muteBy = handler->GetAcoreString(LANG_CONSOLE);
         }
 
-        if (target)
+        if (session)
         {
-            // Target is online, mute will be in effect right away.
+            // Account is online, mute will be in effect right away.
             int64 muteTime = GameTime::GetGameTime().count() + muteDuration;
-            target->GetSession()->m_muteTime = muteTime;
+            session->m_muteTime = muteTime;
             stmt->SetData(0, muteTime);
             std::string nameLink = handler->playerLink(player->GetName());
 
@@ -2932,11 +2776,12 @@ public:
                 handler->SendWorldText(LANG_COMMAND_MUTEMESSAGE_WORLD, muteBy, nameLink, secsToTimeString(muteDuration, true), muteReasonStr);
             }
 
-            ChatHandler(target->GetSession()).PSendSysMessage(LANG_YOUR_CHAT_DISABLED, secsToTimeString(muteDuration, true), muteBy, muteReasonStr);
+            if (target)
+                ChatHandler(session).PSendSysMessage(LANG_YOUR_CHAT_DISABLED, secsToTimeString(muteDuration, true), muteBy, muteReasonStr);
         }
         else
         {
-            // Target is offline, mute will be in effect starting from the next login.
+            // Account is offline, mute will be in effect starting from the next login.
             stmt->SetData(0, -int32(muteDuration));
         }
 
@@ -2954,7 +2799,7 @@ public:
 
         std::string nameLink = handler->playerLink(player->GetName());
 
-        if (sWorld->getBoolConfig(CONFIG_SHOW_MUTE_IN_WORLD) && !target)
+        if (sWorld->getBoolConfig(CONFIG_SHOW_MUTE_IN_WORLD) && !session)
         {
             handler->SendWorldText(LANG_COMMAND_MUTEMESSAGE_WORLD, muteBy, nameLink, secsToTimeString(muteDuration, true), muteReasonStr);
         }
@@ -2965,7 +2810,7 @@ public:
             HashMapHolder<Player>::MapType const& m = ObjectAccessor::GetPlayers();
             for (HashMapHolder<Player>::MapType::const_iterator itr = m.begin(); itr != m.end(); ++itr)
                 if (itr->second->GetSession()->GetSecurity())
-                    ChatHandler(itr->second->GetSession()).PSendSysMessage(target ? LANG_YOU_DISABLE_CHAT : LANG_COMMAND_DISABLE_CHAT_DELAYED,
+                    ChatHandler(itr->second->GetSession()).PSendSysMessage(session ? LANG_YOU_DISABLE_CHAT : LANG_COMMAND_DISABLE_CHAT_DELAYED,
                             (handler->GetSession() ? handler->GetSession()->GetPlayerName() : handler->GetAcoreString(LANG_CONSOLE)), nameLink, secsToTimeString(muteDuration, true), muteReasonStr);
         }
 
@@ -2988,14 +2833,10 @@ public:
         Player* playerTarget = target->GetConnectedPlayer();
         uint32 accountId = playerTarget ? playerTarget->GetSession()->GetAccountId() : sCharacterCache->GetCharacterAccountIdByGuid(target->GetGUID());
 
-        // find only player from same account if any
-        if (!playerTarget)
-        {
-            if (WorldSession* session = sWorldSessionMgr->FindSession(accountId))
-            {
-                playerTarget = session->GetPlayer();
-            }
-        }
+        // The account may be online on another character or idle at character select.
+        WorldSession* session = playerTarget ? playerTarget->GetSession() : sWorldSessionMgr->FindSession(accountId);
+        if (!playerTarget && session)
+            playerTarget = session->GetPlayer();
 
         // must have strong lesser security level
         if (handler->HasLowerSecurity(playerTarget, target->GetGUID(), true))
@@ -3003,15 +2844,15 @@ public:
             return false;
         }
 
-        if (playerTarget)
+        if (session)
         {
-            if (playerTarget->CanSpeak())
+            if (session->m_muteTime <= GameTime::GetGameTime().count())
             {
                 handler->SendErrorMessage(LANG_CHAT_ALREADY_ENABLED);
                 return false;
             }
 
-            playerTarget->GetSession()->m_muteTime = 0;
+            session->m_muteTime = 0;
         }
 
         LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_UPD_MUTE_TIME);
