@@ -1469,7 +1469,14 @@ void Guild::HandleBuyBankTab(WorldSession* session, uint8 tabId)
 
     _CreateNewBankTab();
     _BroadcastEvent(GE_BANK_TAB_PURCHASED);
+    //npcbot: SendPermissions() unsubscribes from the bank updates as after a /reload, but this client keeps its bank
+    // state, changes until the bank is opened again (a deposit into the new tab) would stay missing until relogging
+    bool const receivesBankUpdates = member->ShouldReceiveBankPartialUpdatePackets();
     SendPermissions(session); /// Hack to force client to update permissions
+    if (receivesBankUpdates)
+        if (Member* buyer = GetMember(player->GetGUID()))
+            buyer->SubscribeToGuildBankUpdatePackets();
+    //end npcbot
 }
 
 void Guild::HandleInviteMember(WorldSession* session, std::string const& name)
